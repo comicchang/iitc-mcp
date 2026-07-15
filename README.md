@@ -158,6 +158,11 @@ Browser (Intel Tab)              Local machine
                             └───────────┘
 ```
 
+A single browser page can serve multiple MCP server instances. The broker is
+a shared HTTP daemon; each agent connects via `serve --broker-url`.
+Commands are queued by ID — simultaneous operations may interfere.
+In practice, only one agent operates at a time.
+
 Three packages:
 
 - `packages/protocol` — shared Zod schemas
