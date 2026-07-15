@@ -4,6 +4,7 @@
 
 将 [IITC（Ingress Intel Total Conversion）](https://github.com/IITC-CE/ingress-intel-total-conversion) 浏览器标签页暴露为 [MCP（Model Context Protocol）](https://modelcontextprotocol.io/) 服务器的双模块桥接工具。AI 代理和 MCP 兼容客户端可以读取地图状态、导航视口、搜索 Portal、收发 COMM、兑换 passcode——全部通过本地回环桥接完成。
 
+![截图](assets/screenshot.png)
 ## 快速开始
 
 ### 1. 安装 Userscript
@@ -68,30 +69,34 @@ args = ["github:comicchang/iitc-mcp", "serve"]
 打开 [https://intel.ingress.com](https://intel.ingress.com)，Userscript + MCP Server 都就绪后，IITC Toolbox 里 `MCP` 状态灯变绿即连接成功。
 
 ## 架构
+项目由三个包组成，职责清晰分离。支持两种部署模式。
 
-项目由三个包组成，职责清晰分离：浏览器 userscript 通过 `127.0.0.1` HTTP 与本地 Node.js MCP 服务器通信，服务器通过标准 stdio MCP 接口暴露给 AI 代理。
+**默认模式**（嵌入式 broker：一个 agent = 一个浏览器会话）：
 
 ```mermaid
-flowchart TB
-    subgraph Browser["浏览器（Intel 标签页）"]
-        IITC["IITC 页面上下文"]
-        PA["页面适配器<br/>读取地图/Portal/Link<br/>调用 IITC API"]
-        US["Userscript 沙箱<br/>GM_xmlhttpRequest<br/>轮询传输<br/>心跳"]
-    end
-
-    subgraph Local["本地机器"]
-        BR["桥接 Broker<br/>HTTP: 127.0.0.1:27342<br/>会话与命令分发"]
-        MCPS["MCP 服务器<br/>stdio 传输<br/>16 工具"]
-    end
-
-    AGENT["AI 代理 / MCP 客户端<br/>Codex、OpenCode 等"]
-
-    IITC --> PA
-    PA <-->|CustomEvent 桥接| US
-    US <-->|"POST /bridge/v1/*"| BR
-    BR <--> MCPS
-    MCPS <-->|"stdio MCP JSON-RPC"| AGENT
+graph LR
+    US[Userscript] -->|HTTP :27342| S[Server]
+    S -->|stdio| AGENT[AI Agent]
 ```
+
+**共享模式**（独立 broker + 多 MCP 服务器）：
+
+```mermaid
+graph LR
+    US[Userscript] -->|HTTP :27342| BR[Bridge Broker]
+    MCP_A[MCP Server A] -->|/mcp/*| BR
+    MCP_B[MCP Server B] -->|/mcp/*| BR
+    AGENT_A[AI Agent A] -->|stdio| MCP_A
+    AGENT_B[AI Agent B] -->|stdio| MCP_B
+```
+
+```bash
+iitc-mcp broker                          # 启动独立 broker
+iitc-mcp serve --broker-url http://127.0.0.1:27342   # 连接共享 broker
+```
+
+一个浏览器页面可服务多个 AI agent。命令按 ID 排队——同时操作会互相干扰地图状态，实践中只有一个 agent在操作。
+
 
 ### 包结构
 
@@ -130,6 +135,22 @@ flowchart TB
 
 副作用工具（`iitc_send_comm`、`iitc_redeem_code`）标注了 `destructiveHint: true`、`idempotentHint: false`，**必须在用户明确批准后才能执行**。
 
+
+## 使用场景
+
+自然语言向 AI 助手提问：
+
+- **搜索区域并统计 Portal**：`搜索静安雕塑公园，统计 portal 状态`
+  1. `iitc_search_region("静安雕塑公园")` → 围框 + 等数据加载
+  2. `iitc_list_portals` → 按阵营统计
+
+- **查询特定 Portal**：`青果巷赵宅现在什么颜色，连满 link 了吗`
+  1. `iitc_search("青果巷")` → 找到候选 Portal
+  2. `iitc_get_portal_details(guid)` → 阵营/等级/血量/linkGuids
+
+- **查看附近活跃玩家**：`附近最近有谁在动`
+  1. `iitc_list_players` → 玩家名/阵营/最近位置/动作
+  2. `iitc_get_player_trail("playerName")` → 完整轨迹
 列表工具使用基于游标的分页，带服务端快照（最多 32 个，TTL 30 秒）。结果仅限于 IITC 已在视口中加载的数据——桥接不会执行后台地图平移。
 
 ## 资源
@@ -186,11 +207,7 @@ flowchart TB
 ## 编译调试
 
 ```bash
-git clone https://github.com/comicchang/iitc-mcp.git
-cd iitc-mcp
-npm ci --legacy-peer-deps
-npm run build && npm test        # 61 tests, typecheck, 3 build artifacts
-```
+npm run build && npm test        # 163 tests, typecheck, 3 build artifacts
 
 构建脚本使用 esbuild 产出三个制品：
 
@@ -201,7 +218,7 @@ npm run build && npm test        # 61 tests, typecheck, 3 build artifacts
 日常开发命令：
 
 ```bash
-npm run typecheck    # strict TypeScript
+npm test             # unit tests (163)
 npm run build        # userscript + server
 npm run lint         # ESLint
 npm test             # unit tests (61)
@@ -210,7 +227,8 @@ npm run test:smoke   # no-browser smoke tests
 # 本地启动 MCP server
 npx tsx packages/mcp-server/src/cli.ts serve
 ```
-
 ## 许可证
 
-[MIT](https://opensource.org/licenses/MIT)
+见 [LICENSE](LICENSE)。Fork 必须保留本许可证。仅限 Enlightened 玩家使用。Resistance 和 Machina 阵营不允许使用。禁止绕过上述限制。
+
+Enlightened 💚
