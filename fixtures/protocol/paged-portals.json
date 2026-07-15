@@ -1,0 +1,17 @@
+{
+  "items": [
+    {
+      "guid": "portal-abc-123",
+      "team": "R",
+      "lat": 51.5074,
+      "lng": -0.1278,
+      "detailLevel": "summary",
+      "level": 7,
+      "health": 85,
+      "resCount": 8,
+      "title": "Test Portal"
+    }
+  ],
+  "complete": false,
+  "reason": "IITC_VIEWPORT_CACHE"
+}

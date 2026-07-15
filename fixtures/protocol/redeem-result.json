@@ -1,0 +1,11 @@
+{
+  "rewards": {
+    "xm": 1000,
+    "ap": 500,
+    "other": ["Ultra Strike"],
+    "inventory": [
+      { "name": "Resonator", "awards": [{ "count": 10, "level": 8 }] }
+    ]
+  },
+  "playerData": { "verified_level": 16, "ap": "20000000" }
+}

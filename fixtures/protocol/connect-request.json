@@ -1,0 +1,7 @@
+{
+  "protocolVersion": 1,
+  "pluginVersion": "0.1.0",
+  "iitcVersion": "0.39.1",
+  "tabId": "dGVzdC10YWItMQ",
+  "capabilities": ["map", "entities", "portal", "search", "comm", "redeem"]
+}

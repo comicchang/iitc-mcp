@@ -1,0 +1,7 @@
+{
+  "center": { "lat": 51.5074, "lng": -0.1278 },
+  "zoom": 14,
+  "bounds": { "south": 51.49, "west": -0.15, "north": 51.52, "east": -0.1 },
+  "selectedPortalGuid": "abc123",
+  "dataStatus": { "short": "ok", "long": "Map data loaded" }
+}

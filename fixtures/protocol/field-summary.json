@@ -1,0 +1,9 @@
+{
+  "guid": "field-xyz-789",
+  "team": "R",
+  "points": [
+    { "guid": "portal-a", "lat": 51.5074, "lng": -0.1278 },
+    { "guid": "portal-b", "lat": 51.515, "lng": -0.14 },
+    { "guid": "portal-c", "lat": 51.5, "lng": -0.11 }
+  ]
+}

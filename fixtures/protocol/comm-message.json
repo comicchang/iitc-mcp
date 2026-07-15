@@ -1,0 +1,11 @@
+{
+  "guid": "comm-msg-001",
+  "timestampMs": 1720000000000,
+  "channel": "all",
+  "type": "PLAYER_GENERATED",
+  "automated": false,
+  "team": "R",
+  "player": { "name": "PlayerOne", "team": "R" },
+  "text": "Hello from London!",
+  "portals": [{ "name": "Test Portal", "lat": 51.5074, "lng": -0.1278 }]
+}

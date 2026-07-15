@@ -1,0 +1,6 @@
+{
+  "guid": "link-xyz-456",
+  "team": "E",
+  "origin": { "guid": "portal-abc-123", "lat": 51.5074, "lng": -0.1278 },
+  "destination": { "guid": "portal-def-456", "lat": 51.515, "lng": -0.14 }
+}

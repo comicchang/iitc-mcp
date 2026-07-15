@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "outDir": "../../dist/iitc-plugin",
+    "rootDir": "src",
+    "lib": ["ES2024", "DOM"],
+    "types": []
+  },
+  "include": ["src"]
+}

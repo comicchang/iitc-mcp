@@ -1,0 +1,14 @@
+{
+  "name": "@iitc-mcp/iitc-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "src/page-entry.ts",
+  "types": "src/page-entry.ts",
+  "exports": {
+    ".": "./src/page-entry.ts"
+  },
+  "dependencies": {
+    "@iitc-mcp/protocol": "*"
+  }
+}

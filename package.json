@@ -1,0 +1,41 @@
+{
+  "name": "iitc-mcp",
+  "version": "1.0.0",
+  "bin": {
+    "iitc-mcp": "dist/server/cli.mjs"
+  },
+  "files": [
+    "dist/server/cli.mjs",
+    "LICENSE",
+    "README.md"
+  ],
+  "type": "module",
+  "workspaces": [
+    "packages/protocol",
+    "packages/iitc-plugin",
+    "packages/mcp-server"
+  ],
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "typecheck": "tsc -b",
+    "build": "npm run typecheck && tsx scripts/build.ts",
+    "test": "vitest run",
+    "test:modules": "playwright test",
+    "test:smoke": "vitest run test/smoke",
+    "lint": "eslint packages/ test/ scripts/"
+  },
+  "devDependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "@playwright/test": "1.61.1",
+    "@types/node": "20.19.43",
+    "esbuild": "0.28.1",
+    "eslint": "10.7.0",
+    "tsx": "4.23.1",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "8.64.0",
+    "vitest": "4.1.10",
+    "zod": "4.4.3"
+  }
+}

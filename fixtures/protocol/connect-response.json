@@ -1,0 +1,6 @@
+{
+  "sessionId": "c2Vzc2lvbi0xMjM0",
+  "leaseMs": 45000,
+  "heartbeatMs": 15000,
+  "maxBodyBytes": 1048576
+}

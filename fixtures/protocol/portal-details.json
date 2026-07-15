@@ -1,0 +1,25 @@
+{
+  "guid": "portal-abc-123",
+  "team": "R",
+  "lat": 51.5074,
+  "lng": -0.1278,
+  "detailLevel": "detailed",
+  "level": 7,
+  "health": 85,
+  "resCount": 8,
+  "title": "Test Portal",
+  "image": "https://example.com/portal.png",
+  "owner": "PlayerOne",
+  "mods": [
+    { "owner": "PlayerOne", "name": "Force Amp", "rarity": "RARE", "stats": { "XM": "1000" } },
+    null
+  ],
+  "resonators": [
+    { "owner": "PlayerOne", "level": 8, "energy": 95 },
+    { "owner": "PlayerTwo", "level": 7, "energy": 80 },
+    null
+  ],
+  "history": { "visited": true, "captured": true, "scoutControlled": false },
+  "linkGuids": { "in": ["link-1"], "out": ["link-2", "link-3"] },
+  "fieldGuids": ["field-1"]
+}
