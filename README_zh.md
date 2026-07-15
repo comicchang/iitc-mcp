@@ -151,6 +151,14 @@ iitc-mcp serve --broker-url http://127.0.0.1:27342   # 连接共享 broker
 - **查看附近活跃玩家**：`附近最近有谁在动`
   1. `iitc_list_players` → 玩家名/阵营/最近位置/动作
   2. `iitc_get_player_trail("playerName")` → 完整轨迹
+
+- **找高价值目标**：`区域内有哪些 L7+ Portal`
+  1. `iitc_search_region("目标区域")` → 围框
+  2. `iitc_list_portals` → 按 level 筛选
+
+- **监控 COMM**：`看看 COMM 最近在聊什么`
+  1. `iitc_list_comm(channel="all")` → 最近消息
+
 列表工具使用基于游标的分页，带服务端快照（最多 32 个，TTL 30 秒）。结果仅限于 IITC 已在视口中加载的数据——桥接不会执行后台地图平移。
 
 ## 资源
