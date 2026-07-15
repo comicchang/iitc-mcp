@@ -179,7 +179,7 @@ iitc-mcp serve --broker-url http://127.0.0.1:27342   # 连接共享 broker
 
 ### "SESSION_CONFLICT" 错误
 
-- 只有一个 Intel 标签页可以持有活跃的桥接会话
+- 只有一个 Intel 标签页可以持有活跃的桥接会话（多个 MCP agent 可共享同一会话）
 - 关闭另一个 Intel 标签页，或等待 45 秒让旧会话租约过期
 - 租约清除后第二个标签页会自动连接
 
@@ -200,31 +200,32 @@ iitc-mcp serve --broker-url http://127.0.0.1:27342   # 连接共享 broker
 
 - **仅回环**：HTTP 桥接仅绑定 `127.0.0.1`，无外部网络访问，无需 token 认证
 - **CSP 合规**：页面适配器使用兼容 Intel `script-src` CSP 的内联 `<script>` 标签注入模式，不使用 `eval`、`onclick` 或 `unsafeWindow` 绕过
-- **单标签页**：只有一个 Intel 标签页可以持有活跃会话，第二个标签页收到 HTTP 409
+- **多 agent 共享**：多个 MCP agent 可共享一个 Intel 标签页的桥接会话。多个 Intel 标签页仍限制为单 session（第二个返回 HTTP 409）
 - **无数据泄露**：所有通信保留在本地机器上，不向外部服务器发送数据
 - **COMM 和 passcode**：passcode 和 COMM 文本仅保留在浏览器内存中——它们由 IITC 发送到 Niantic 服务器，但从不本地存储或发送给 MCP 客户端（除非工具明确返回）
 
 ## 编译调试
 
 ```bash
+git clone https://github.com/comicchang/iitc-mcp.git
+cd iitc-mcp
+npm ci --legacy-peer-deps
 npm run build && npm test        # 163 tests, typecheck, 3 build artifacts
+```
 
 构建脚本使用 esbuild 产出三个制品：
 
-1. **Userscript 包** (`dist/iitc-mcp.user.js`) — 页面适配器 + page-entry 打包为 IIFE
-2. **元数据文件** (`dist/iitc-mcp.meta.js`) — `@updateURL`/`@downloadURL` 元数据
-3. **服务器入口** (`dist/server/cli.mjs`) — 打包后的 Node.js ESM 入口
+1. **Userscript 包** (`dist/iitc-mcp.user.js`)
+2. **元数据文件** (`dist/iitc-mcp.meta.js`)
+3. **服务器入口** (`dist/server/cli.mjs`)
 
 日常开发命令：
 
 ```bash
-npm test             # unit tests (163)
-npm run build        # userscript + server
-npm run lint         # ESLint
-npm test             # unit tests (61)
-npm run test:smoke   # no-browser smoke tests
-
-# 本地启动 MCP server
+npm run typecheck
+npm run build
+npm run lint
+npm test
 npx tsx packages/mcp-server/src/cli.ts serve
 ```
 ## 许可证
