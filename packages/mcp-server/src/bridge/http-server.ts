@@ -5,6 +5,7 @@
  */
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import type { BridgeBroker } from "./broker.js";
+import type { BridgeMethod } from "@iitc-mcp/protocol";
 
 const MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_PORT = 27342;
@@ -86,11 +87,9 @@ export function startServer(
   let actualPort = requestedPort;
 
   const server: Server = createServer(async (req, res) => {
-    // 仅允许 POST
-    if (req.method !== "POST") {
-      errorJson(res, 405, "UNSUPPORTED", "Method not allowed");
-      return;
-    }
+    const method = req.method ?? "GET";
+    const reqPath = req.url?.split("?")[0] ?? "";
+    const query = new URL(req.url ?? "", "http://localhost").searchParams;
 
     // 仅允许 loopback
     const host = req.headers.host;
@@ -99,7 +98,41 @@ export function startServer(
       return;
     }
 
-    const path = req.url?.split("?")[0] ?? "";
+    // MCP 控制面（GET + POST）
+    if (reqPath === "/mcp/status" && method === "GET") {
+      const status = await broker.getConnectionStatus();
+      json(res, 200, status);
+      return;
+    }
+
+    if (reqPath === "/mcp/events" && method === "GET") {
+      const count = parseInt(query.get("count") ?? "100", 10);
+      const events = await broker.getRecentEvents(count);
+      json(res, 200, { events });
+      return;
+    }
+
+    if (reqPath === "/mcp/call" && method === "POST") {
+      const body = await parseBody(req, res);
+      if (body === null) return;
+      const { method: bridgeMethod, params, timeoutMs } = body as { method: string; params: unknown; timeoutMs?: number };
+      try {
+        const result = await broker.call(bridgeMethod as BridgeMethod, params, { timeoutMs });
+        json(res, 200, { ok: true, result });
+      } catch (err: unknown) {
+        const error = err as { code?: string; message?: string; retryable?: boolean };
+        json(res, 200, { ok: false, error });
+      }
+      return;
+    }
+
+    // Bridge 端点（仅 POST）
+    if (method !== "POST") {
+      errorJson(res, 405, "UNSUPPORTED", "Method not allowed");
+      return;
+    }
+
+    const path = reqPath;
 
     if (path === "/bridge/v1/connect") {
       const body = await parseBody(req, res);

@@ -8,27 +8,62 @@ Let your AI assistant see the map, count portals, track players, and talk to COM
 
 ## Quick Start
 
-```bash
-git clone https://github.com/comicchang/iitc-mcp.git
-cd iitc-mcp
-npm ci --legacy-peer-deps
-npm run build && npm test        # 61 tests, typecheck, 3 build artifacts
-```
+### 1. Install Userscript
 
-### Userscript
-
-Install in Tampermonkey:
+Install [IITC](https://iitc.app/) first, then add the iitc-mcp userscript in Tampermonkey:
 
 ```
 https://github.com/comicchang/iitc-mcp/releases/latest/download/iitc-mcp.user.js
 ```
 
-Open [https://intel.ingress.com](https://intel.ingress.com). The bridge auto-connects — look for `MCP` in the IITC Toolbox (green = connected).
-### Start MCP Server
+
+### 2. Configure MCP Server for Your Agent
+
+CLI entry:
 
 ```bash
 npx github:comicchang/iitc-mcp serve
 ```
+
+**Codex** (`~/.codex/config.toml` or project-level `.codex/config.toml`):
+
+```toml
+[mcp_servers.iitc-mcp]
+command = "npx"
+args = ["github:comicchang/iitc-mcp", "serve"]
+```
+
+**OpenCode** (`~/.openCode/mcp.json` or project-level `.openCode/mcp.json`):
+
+```json
+{
+  "mcpServers": {
+    "iitc-mcp": {
+      "command": "npx",
+      "args": ["github:comicchang/iitc-mcp", "serve"]
+    }
+  }
+}
+```
+
+
+<details>
+<summary>Oh My Pi local dev config</summary>
+
+```json
+"iitc-mcp": {
+  "type": "stdio",
+  "command": "/path/to/node_modules/.bin/tsx",
+  "args": ["/path/to/packages/mcp-server/src/cli.ts", "serve"]
+}
+```
+
+</details>
+
+Reload MCP config and you're set — 16 tools auto-register.
+
+Open [https://intel.ingress.com](https://intel.ingress.com). Once both the userscript and MCP server are ready, the `MCP` indicator in IITC Toolbox turns green.
+
 
 ## MCP Tools (16 total)
 
@@ -122,7 +157,16 @@ Three packages:
 - `packages/iitc-plugin` — userscript (page adapter + transport)
 - `packages/mcp-server` — Node.js MCP server (broker + HTTP + CLI)
 
-## Development
+## Build & Development
+
+```bash
+git clone https://github.com/comicchang/iitc-mcp.git
+cd iitc-mcp
+npm ci --legacy-peer-deps
+npm run build && npm test        # 61 tests, typecheck, 3 build artifacts
+```
+
+Daily dev commands:
 
 ```bash
 npm run typecheck    # strict TypeScript
@@ -131,18 +175,8 @@ npm run lint         # ESLint
 npm test             # unit tests (61)
 npm run test:smoke   # no-browser smoke tests
 
-# Start MCP server
+# Start MCP server locally
 npx tsx packages/mcp-server/src/cli.ts serve
-```
-
-## Oh My Pi Config
-
-```json
-"iitc-mcp": {
-  "type": "stdio",
-  "command": "/path/to/node_modules/.bin/tsx",
-  "args": ["/path/to/packages/mcp-server/src/cli.ts", "serve"]
-}
 ```
 
 ## License

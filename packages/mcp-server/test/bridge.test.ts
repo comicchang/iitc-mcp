@@ -253,21 +253,21 @@ describe("BridgeBroker", () => {
     await expect(resultP).rejects.toMatchObject({ code: "NOT_FOUND" });
   });
 
-  it("getConnectionStatus returns disconnected when no session", () => {
-    const status = broker.getConnectionStatus();
+  it("getConnectionStatus returns disconnected when no session", async () => {
+    const status = await broker.getConnectionStatus();
     expect(status.connected).toBe(false);
     expect(status.sessionId).toBeNull();
   });
 
-  it("getConnectionStatus returns connected after connect", () => {
+  it("getConnectionStatus returns connected after connect", async () => {
     connect();
-    const status = broker.getConnectionStatus();
+    const status = await broker.getConnectionStatus();
     expect(status.connected).toBe(true);
     expect(status.sessionId).toBeTruthy();
     expect(status.tabId).toBe("test-tab-1");
   });
 
-  it("getRecentEvents returns pushed events", () => {
+  it("getRecentEvents returns pushed events", async () => {
     const { body } = connect();
     const sid = (body as { sessionId: string }).sessionId;
     broker.handleEvents({
@@ -277,12 +277,12 @@ describe("BridgeBroker", () => {
         { eventId: "e2", sequence: 2, occurredAt: new Date().toISOString(), type: "entities.changed", payload: {} },
       ],
     });
-    const events = broker.getRecentEvents();
+    const events = await broker.getRecentEvents();
     expect(events).toHaveLength(2);
     expect(events[0].type).toBe("map.changed");
   });
 
-  it("event ring caps at 1000", () => {
+  it("event ring caps at 1000", async () => {
     const { body } = connect();
     const sid = (body as { sessionId: string }).sessionId;
     const events = Array.from({ length: 1005 }, (_, i) => ({
@@ -293,7 +293,7 @@ describe("BridgeBroker", () => {
       payload: {},
     }));
     broker.handleEvents({ sessionId: sid, events });
-    const recent = broker.getRecentEvents(2000);
+    const recent = await broker.getRecentEvents(2000);
     expect(recent).toHaveLength(1000);
     expect(recent[0].eventId).toBe("e5");
   });
@@ -339,7 +339,7 @@ describe("BridgeBroker", () => {
     await expect(p).rejects.toMatchObject({ code: "CANCELLED" });
   });
 
-  it("handleEvents marks bridge.ready", () => {
+  it("handleEvents marks bridge.ready", async () => {
     const { body } = connect();
     const sid = (body as { sessionId: string }).sessionId;
     broker.handleEvents({
@@ -352,7 +352,7 @@ describe("BridgeBroker", () => {
         payload: {},
       }],
     });
-    const events = broker.getRecentEvents();
+    const events = await broker.getRecentEvents();
     expect(events.some((e) => e.type === "bridge.ready")).toBe(true);
   });
 

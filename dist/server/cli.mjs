@@ -22032,6 +22032,51 @@ var BridgeBroker = class {
   }
 };
 
+// packages/mcp-server/src/bridge/remote-client.ts
+var RemoteBridgeClient = class {
+  baseUrl;
+  constructor(opts) {
+    this.baseUrl = opts.brokerUrl.replace(/\/$/, "");
+  }
+  async call(method, params, opts) {
+    const timeoutMs = opts?.timeoutMs ?? 3e4;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    if (opts?.signal) {
+      opts.signal.addEventListener("abort", () => controller.abort(), {
+        once: true
+      });
+    }
+    try {
+      const resp = await fetch(`${this.baseUrl}/mcp/call`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ method, params, timeoutMs }),
+        signal: controller.signal
+      });
+      const body = await resp.json();
+      if (!body.ok)
+        throw body.error ?? {
+          code: "INTERNAL",
+          message: "Unknown error",
+          retryable: false
+        };
+      return body.result;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  async getConnectionStatus() {
+    const resp = await fetch(`${this.baseUrl}/mcp/status`);
+    return resp.json();
+  }
+  async getRecentEvents(count = 100) {
+    const resp = await fetch(`${this.baseUrl}/mcp/events?count=${count}`);
+    const body = await resp.json();
+    return body.events;
+  }
+};
+
 // packages/mcp-server/src/bridge/http-server.ts
 import { createServer } from "node:http";
 var MAX_BODY_BYTES = 1048576;
@@ -22099,16 +22144,43 @@ function startServer(broker, opts) {
   const requestedPort = opts?.port ?? DEFAULT_PORT;
   let actualPort = requestedPort;
   const server = createServer(async (req, res) => {
-    if (req.method !== "POST") {
-      errorJson(res, 405, "UNSUPPORTED", "Method not allowed");
-      return;
-    }
+    const method = req.method ?? "GET";
+    const reqPath = req.url?.split("?")[0] ?? "";
+    const query = new URL(req.url ?? "", "http://localhost").searchParams;
     const host = req.headers.host;
     if (!host || !isLoopbackHost(host, actualPort)) {
       errorJson(res, 400, "INVALID_ARGUMENT", "Host must be loopback");
       return;
     }
-    const path = req.url?.split("?")[0] ?? "";
+    if (reqPath === "/mcp/status" && method === "GET") {
+      const status = await broker.getConnectionStatus();
+      json2(res, 200, status);
+      return;
+    }
+    if (reqPath === "/mcp/events" && method === "GET") {
+      const count = parseInt(query.get("count") ?? "100", 10);
+      const events = await broker.getRecentEvents(count);
+      json2(res, 200, { events });
+      return;
+    }
+    if (reqPath === "/mcp/call" && method === "POST") {
+      const body = await parseBody(req, res);
+      if (body === null) return;
+      const { method: bridgeMethod, params, timeoutMs } = body;
+      try {
+        const result = await broker.call(bridgeMethod, params, { timeoutMs });
+        json2(res, 200, { ok: true, result });
+      } catch (err) {
+        const error51 = err;
+        json2(res, 200, { ok: false, error: error51 });
+      }
+      return;
+    }
+    if (method !== "POST") {
+      errorJson(res, 405, "UNSUPPORTED", "Method not allowed");
+      return;
+    }
+    const path = reqPath;
     if (path === "/bridge/v1/connect") {
       const body = await parseBody(req, res);
       if (body === null) return;
@@ -32251,7 +32323,9 @@ var DEFAULT_PORT2 = 27342;
 async function main() {
   const args = process.argv.slice(2);
   const command = args[0];
-  if (command === "serve") {
+  if (command === "broker") {
+    await brokerCmd(args);
+  } else if (command === "serve") {
     await serve(args);
   } else if (command === "token" && args[1] === "show") {
     tokenShow();
@@ -32262,7 +32336,29 @@ async function main() {
     process.exit(1);
   }
 }
+async function brokerCmd(args) {
+  let port = DEFAULT_PORT2;
+  const portIdx = args.indexOf("--port");
+  if (portIdx !== -1 && args[portIdx + 1]) {
+    port = parseInt(args[portIdx + 1], 10);
+  }
+  const broker = new BridgeBroker();
+  const httpServer = await startServer(broker, { port });
+  const tokenInfo = getOrCreateToken();
+  console.error(`Bridge broker listening on http://127.0.0.1:${httpServer.port}`);
+  console.error(`Token: ${tokenInfo.token}`);
+  const shutdown = async () => {
+    console.error("Shutting down broker...");
+    broker.revokeSession();
+    await httpServer.close();
+    process.exit(0);
+  };
+  process.on("SIGINT", shutdown);
+  process.on("SIGTERM", shutdown);
+}
 async function serve(args) {
+  const brokerUrlIdx = args.indexOf("--broker-url");
+  const brokerUrl = brokerUrlIdx !== -1 ? args[brokerUrlIdx + 1] : void 0;
   let port = DEFAULT_PORT2;
   const portIdx = args.indexOf("--bridge-port");
   if (portIdx !== -1 && args[portIdx + 1]) {
@@ -32272,24 +32368,30 @@ async function serve(args) {
       process.exit(1);
     }
   }
-  const broker = new BridgeBroker();
-  const httpServer = await startServer(broker, { port });
+  let bridgeClient;
+  let httpServer;
+  if (brokerUrl) {
+    bridgeClient = new RemoteBridgeClient({ brokerUrl });
+    console.error(`Connecting to remote broker: ${brokerUrl}`);
+  } else {
+    const broker = new BridgeBroker();
+    httpServer = await startServer(broker, { port });
+    bridgeClient = broker;
+    console.error(`Bridge origin: http://127.0.0.1:${httpServer.port}`);
+  }
   const tokenInfo = getOrCreateToken();
-  console.error(`Bridge origin: http://127.0.0.1:${httpServer.port}`);
   console.error(`Token: ${tokenInfo.token}`);
-  console.error(`iitc-mcp server ready on port ${httpServer.port}`);
-  const mcpBridge = new MCPServerBridge({ bridgeClient: broker });
+  console.error(`iitc-mcp server ready`);
+  const mcpBridge = new MCPServerBridge({ bridgeClient });
   await mcpBridge.connect();
   let shuttingDown = false;
   const shutdown = async () => {
-    if (shuttingDown) {
-      process.exit(0);
-    }
+    if (shuttingDown) process.exit(0);
     shuttingDown = true;
     console.error("Shutting down...");
-    broker.revokeSession();
+    if ("revokeSession" in bridgeClient) bridgeClient.revokeSession();
     await mcpBridge.close();
-    await httpServer.close();
+    if (httpServer) await httpServer.close();
     process.exit(0);
   };
   process.on("SIGINT", shutdown);
@@ -32314,9 +32416,10 @@ function printUsage() {
   console.error("Usage: iitc-mcp <command> [options]");
   console.error("");
   console.error("Commands:");
-  console.error("  serve [--bridge-port <port>]  Start MCP server (default port 27342)");
-  console.error("  token show                    Show current bridge token");
-  console.error("  token rotate                  Rotate bridge token");
+  console.error("  broker [--port <port>]                           Start standalone broker daemon");
+  console.error("  serve [--bridge-port <port>] [--broker-url URL]  Start MCP server");
+  console.error("  token show                                       Show current bridge token");
+  console.error("  token rotate                                     Rotate bridge token");
 }
 main().catch((err) => {
   console.error("Fatal:", err instanceof Error ? err.message : err);

@@ -4,6 +4,63 @@
 
 将 [IITC（Ingress Intel Total Conversion）](https://github.com/IITC-CE/ingress-intel-total-conversion) 浏览器标签页暴露为 [MCP（Model Context Protocol）](https://modelcontextprotocol.io/) 服务器的双模块桥接工具。AI 代理和 MCP 兼容客户端可以读取地图状态、导航视口、搜索 Portal、收发 COMM、兑换 passcode——全部通过本地回环桥接完成。
 
+## 快速开始
+
+### 1. 安装 Userscript
+
+先装好 [IITC](https://iitc.app/)，然后用 Tampermonkey 安装 iitc-mcp 脚本：
+
+```
+https://github.com/comicchang/iitc-mcp/releases/latest/download/iitc-mcp.user.js
+```
+
+### 2. 给 Agent 配置 MCP Server
+
+CLI 入口：
+
+```bash
+npx github:comicchang/iitc-mcp serve
+```
+
+**Codex**（`~/.codex/config.toml` 或项目级 `.codex/config.toml`）：
+
+```toml
+[mcp_servers.iitc-mcp]
+command = "npx"
+args = ["github:comicchang/iitc-mcp", "serve"]
+```
+
+**OpenCode**（`~/.openCode/mcp.json` 或项目级 `.openCode/mcp.json`）：
+
+```json
+{
+  "mcpServers": {
+    "iitc-mcp": {
+      "command": "npx",
+      "args": ["github:comicchang/iitc-mcp", "serve"]
+    }
+  }
+}
+```
+
+
+<details>
+<summary>Oh My Pi 本地开发配置</summary>
+
+```json
+"iitc-mcp": {
+  "type": "stdio",
+  "command": "/path/to/node_modules/.bin/tsx",
+  "args": ["/path/to/packages/mcp-server/src/cli.ts", "serve"]
+}
+```
+
+</details>
+
+重载 MCP 配置即可使用，16 个工具自动注册。
+
+打开 [https://intel.ingress.com](https://intel.ingress.com)，Userscript + MCP Server 都就绪后，IITC Toolbox 里 `MCP` 状态灯变绿即连接成功。
+
 ## 架构
 
 项目由三个包组成，职责清晰分离：浏览器 userscript 通过 `127.0.0.1` HTTP 与本地 Node.js MCP 服务器通信，服务器通过标准 stdio MCP 接口暴露给 AI 代理。
@@ -44,101 +101,6 @@ flowchart TB
 - **Tampermonkey**（或兼容的 userscript 管理器），Chrome 或 Firefox
 - 可访问 `https://intel.ingress.com` 的浏览器
 
-## 安装
-
-### 1. 克隆并安装依赖
-
-```bash
-git clone https://github.com/comicchang/iitc-mcp.git
-cd iitc-mcp
-npm ci
-```
-
-### 2. 构建
-
-```bash
-npm run build
-```
-
-产出：
-- `dist/iitc-mcp.user.js` — Tampermonkey userscript（安装此文件）
-- `dist/iitc-mcp.meta.js` — `@updateURL`/`@downloadURL` 元数据文件
-- `dist/server/cli.mjs` — 打包后的 Node.js 服务器入口
-
-### 3. 安装 userscript
-
-**快速安装（推荐）：** 在浏览器中打开以下 URL，Tampermonkey 会提示安装：
-
-```
-https://github.com/comicchang/iitc-mcp/releases/latest/download/iitc-mcp.user.js
-```
-
-**手动安装：**
-1. 打开 Tampermonkey 控制面板（点击 Tampermonkey 图标 → **控制面板**）
-2. 点击 **+** 标签页创建新脚本
-3. 用文本编辑器打开 `dist/iitc-mcp.user.js`，复制全部内容
-4. 粘贴到新脚本编辑器中，替换默认模板
-5. 按 **Ctrl+S**（或 **Cmd+S**）保存
-
-### 4. 启动 MCP 服务器
-
-```bash
-node dist/server/cli.mjs serve
-```
-
-或不构建直接运行（使用 tsx）：
-
-```bash
-npx tsx packages/mcp-server/src/cli.ts serve
-```
-
-服务器输出（stderr）：
-
-```
-Bridge origin: http://127.0.0.1:27342
-iitc-mcp server ready on port 27342
-```
-
-自定义端口：`node dist/server/cli.mjs serve --bridge-port 12345`
-
-
-## 使用
-
-### 启动会话
-1. 启动 MCP 服务器：`node dist/server/cli.mjs serve`
-2. 打开 `https://intel.ingress.com` 并登录
-3. IITC MCP 插件自动连接本地服务器——无需配对
-4. Intel 页面右下角显示状态指示器，桥接活跃时显示 **🔗 MCP Connected**（连接时保持绿色）
-
-### MCP 客户端配置
-
-配置 MCP 客户端使用 stdio 传输。以 Claude Desktop 为例，在 `claude_desktop_config.json` 中添加：
-
-```json
-{
-  "mcpServers": {
-    "iitc": {
-      "command": "node",
-      "args": ["dist/server/cli.mjs", "serve"]
-    }
-  }
-}
-```
-
-或使用 npx/tsx（无需构建）：
-
-```json
-{
-  "mcpServers": {
-    "iitc": {
-      "command": "npx",
-      "args": ["tsx", "packages/mcp-server/src/cli.ts", "serve"]
-    }
-  }
-}
-```
-
-服务器通过 stdio 通信——stdin/stdout 承载 MCP JSON-RPC，所有日志输出到 stderr。
 
 ## 工具
 
@@ -156,36 +118,32 @@ iitc-mcp server ready on port 27342
 | `iitc_list_comm` | 只读 | 列出指定频道的 COMM 消息（`all`、`faction`、`alerts`）；可选刷新 |
 | `iitc_send_comm` | **副作用** | 向 `all` 或 `faction` COMM 频道发送消息 |
 | `iitc_redeem_code` | **副作用** | 提交 Ingress passcode 进行兑换（一次性，奖励物品/AP/XM） |
+## 编译调试
 
-副作用工具（`iitc_send_comm`、`iitc_redeem_code`）标注了 `destructiveHint: true`、`idempotentHint: false`，**必须在用户明确批准后才能执行**。
+```bash
+git clone https://github.com/comicchang/iitc-mcp.git
+cd iitc-mcp
+npm ci --legacy-peer-deps
+npm run build && npm test        # 61 tests, typecheck, 3 build artifacts
+```
 
-列表工具使用基于游标的分页，带服务端快照（最多 32 个，TTL 30 秒）。结果仅限于 IITC 已在视口中加载的数据——桥接不会执行后台地图平移。
+构建脚本使用 esbuild 产出三个制品：
+1. **Userscript 包** (`dist/iitc-mcp.user.js`) — 页面适配器 + page-entry 打包为 IIFE
+2. **元数据文件** (`dist/iitc-mcp.meta.js`) — `@updateURL`/`@downloadURL` 元数据
+3. **服务器入口** (`dist/server/cli.mjs`) — 打包后的 Node.js ESM 入口
 
-## 资源
+日常开发命令：
 
-| URI | 说明 |
-|-----|------|
-| `iitc://status` | 连接状态、IITC/插件版本、能力、当前地图状态 |
-| `iitc://events/recent` | 最近 100 个规范化桥接事件（地图变化、实体更新、COMM） |
-| `iitc://selection` | 当前选中 Portal 的详情，或 `null` |
+```bash
+npm run typecheck    # strict TypeScript
+npm run build        # userscript + server
+npm run lint         # ESLint
+npm test             # unit tests (61)
+npm run test:smoke   # no-browser smoke tests
 
-当连接、地图、选择或事件状态变化时，资源通过 `notifications/resources/updated` 自动更新。
-
-
-## 故障排除
-
-### Intel 页面显示"MCP Disconnected"
-
-- 检查 MCP 服务器是否正在运行（终端中 `node dist/server/cli.mjs serve` 是否活跃）
-- 确认防火墙未阻止 `127.0.0.1:27342`
-- 检查浏览器控制台（F12）中的 `[iitc-mcp]` 日志消息
-
-### 工具返回 `NOT_READY` 错误
-
-- 等待 IITC 在 Intel 页面上完全加载（所有地图瓦片、Portal 数据）
-- 确认 IITC MCP Bridge userscript 已安装并在 Tampermonkey 中启用
-- 检查浏览器控制台（F12）中的 `[iitc-mcp]` 日志消息
-
+# 本地启动 MCP server
+npx tsx packages/mcp-server/src/cli.ts serve
+```
 ### "SESSION_CONFLICT" 错误
 
 - 只有一个 Intel 标签页可以持有活跃的桥接会话
