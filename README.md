@@ -143,23 +143,30 @@ iitc_list_comm(channel="all")       → 最近消息
 
 ## Architecture
 
-```
-Browser (Intel Tab)              Local machine
-┌──────────────────┐    ┌─────────────────────┐
-│ IITC Page Context│    │ MCP Server (stdio)  │
-│   ↕ CustomEvent  │    │   ↕ BridgeClient    │
-│ Userscript       │◄──►│ Bridge Broker       │
-│ (GM_xmlhttpRequest)│  │ (127.0.0.1:27342)  │
-└──────────────────┘    └─────────────────────┘
-                                  ▲
-                                  │ stdio JSON-RPC
-                            ┌─────┴─────┐
-                            │ AI Agent   │
-                            └───────────┘
+**Default mode** — embedded broker (one agent = one browser session):
+
+```mermaid
+graph LR
+    US[Browserscript] -->|HTTP :27342| S[Server]
+    S -->|stdio| AGENT[AI Agent]
 ```
 
-A single browser page can serve multiple MCP server instances. The broker is
-a shared HTTP daemon; each agent connects via `serve --broker-url`.
+**Shared mode** — standalone broker + multiple MCP servers:
+
+```mermaid
+graph LR
+    US[Browserscript] -->|HTTP :27342| BR[Bridge Broker]
+    BR -->|/mcp/*| MCP_A[MCP Server A]
+    BR -->|/mcp/*| MCP_B[MCP Server B]
+    MCP_A -->|stdio| AGENT_A[AI Agent A]
+    MCP_B -->|stdio| AGENT_B[AI Agent B]
+```
+
+```bash
+iitc-mcp broker                          # start standalone broker
+iitc-mcp serve --broker-url http://...   # connect to shared broker
+```
+
 Commands are queued by ID — simultaneous operations may interfere.
 In practice, only one agent operates at a time.
 
