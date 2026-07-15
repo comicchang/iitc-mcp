@@ -164,7 +164,7 @@ graph LR
 
 ```bash
 iitc-mcp broker                          # start standalone broker
-iitc-mcp serve --broker-url http://...   # connect to shared broker
+iitc-mcp serve --broker-url http://127.0.0.1:27342   # connect to shared broker
 ```
 Commands are queued by ID — simultaneous operations may interfere.
 In practice, only one agent operates at a time.
