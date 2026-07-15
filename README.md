@@ -3,6 +3,9 @@
 Bridge between [IITC](https://iitc.app/) (Ingress Intel Total Conversion) and MCP (Model Context Protocol) agents.
 Let your AI assistant see the map, count portals, track players, and talk to COMM — without touching a mouse.
 
+![IITC MCP Bridge screenshot](assets/screenshot.png)
+
+
 ## Quick Start
 
 ```bash

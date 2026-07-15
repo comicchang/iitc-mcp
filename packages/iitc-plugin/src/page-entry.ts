@@ -45,7 +45,7 @@ function createStatusIndicator(): void {
   link.id = "iitc-mcp-status";
   link.textContent = "MCP: Connecting";
   link.title = "MCP bridge connecting";
-  link.style.color = "#607D8B";
+  link.style.setProperty("color", "#607D8B", "important");
   link.addEventListener("click", () => {
     if (!bridgeConnected && channelId) {
       document.dispatchEvent(new CustomEvent(`iitc-mcp:${channelId}:reconnect`));
@@ -64,11 +64,11 @@ function showStatusIndicator(connected: boolean): void {
   if (connected) {
     statusToolboxLink.textContent = "MCP";
     statusToolboxLink.title = "MCP bridge connected";
-    statusToolboxLink.style.color = "#4CAF50";
+    statusToolboxLink.style.setProperty("color", "#4CAF50", "important");
   } else {
     statusToolboxLink.textContent = "MCP";
     statusToolboxLink.title = "MCP bridge disconnected; click to reconnect";
-    statusToolboxLink.style.color = "#F44336";
+    statusToolboxLink.style.setProperty("color", "#F44336", "important");
   }
 }
 
@@ -138,8 +138,7 @@ function pageMain(channel: string): void {
     // IITC 完成启动后，Leaflet map 和 hook API 均已可用。
     registerHooks();
 
-    // Page adapter readiness and bridge connectivity are separate states.
-    // The sandbox reports the authoritative HTTP bridge state.
+    // 通知 sandbox: bridge ready
     dispatchEvent({
       eventId: crypto.randomUUID(),
       sequence: sequence++,

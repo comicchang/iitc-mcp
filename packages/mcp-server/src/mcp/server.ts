@@ -463,7 +463,7 @@ export class MCPServerBridge {
       "connection-status",
       RESOURCE_URIS.status,
       async (_uri, _extra) => {
-        const status = getStatus();
+        const status = await getStatus();
         let mapState: MapState | null = null;
         if (status.connected) {
           try {
@@ -485,7 +485,7 @@ export class MCPServerBridge {
       "recent-events",
       RESOURCE_URIS.events,
       async (_uri, _extra) => {
-        const events = this.bridgeClient.getRecentEvents(100);
+        const events = await this.bridgeClient.getRecentEvents(100);
         return {
           contents: [{ uri: RESOURCE_URIS.events, mimeType: JSON_MIME, text: JSON.stringify(events) }],
         };
@@ -497,7 +497,7 @@ export class MCPServerBridge {
       "portal-selection",
       RESOURCE_URIS.selection,
       async (_uri, _extra) => {
-        const status = getStatus();
+        const status = await getStatus();
         if (!status.connected) {
           return {
             contents: [{ uri: RESOURCE_URIS.selection, mimeType: JSON_MIME, text: "null" }],

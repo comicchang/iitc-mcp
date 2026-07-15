@@ -46,8 +46,8 @@ export interface BridgeBrokerOptions {
 
 export interface BridgeClient {
   call(method: BridgeMethod, params: unknown, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown>;
-  getConnectionStatus(): SessionStatus;
-  getRecentEvents(count?: number): BridgeEvent[];
+  getConnectionStatus(): Promise<SessionStatus>;
+  getRecentEvents(count?: number): Promise<BridgeEvent[]>;
 }
 
 const LEASE_MS = 45_000;
@@ -249,7 +249,7 @@ export class BridgeBroker implements BridgeClient {
   }
 
   /** 获取连接状态 */
-  getConnectionStatus(): SessionStatus {
+  async getConnectionStatus(): Promise<SessionStatus> {
     if (!this.session) {
       return {
         connected: false,
@@ -273,7 +273,7 @@ export class BridgeBroker implements BridgeClient {
   }
 
   /** 获取最近事件 */
-  getRecentEvents(count = 100): BridgeEvent[] {
+  async getRecentEvents(count = 100): Promise<BridgeEvent[]> {
     return this.eventRing.slice(-count);
   }
 

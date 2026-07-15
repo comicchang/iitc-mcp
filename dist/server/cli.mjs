@@ -21901,7 +21901,7 @@ var BridgeBroker = class {
     return promise2;
   }
   /** 获取连接状态 */
-  getConnectionStatus() {
+  async getConnectionStatus() {
     if (!this.session) {
       return {
         connected: false,
@@ -21924,7 +21924,7 @@ var BridgeBroker = class {
     };
   }
   /** 获取最近事件 */
-  getRecentEvents(count = 100) {
+  async getRecentEvents(count = 100) {
     return this.eventRing.slice(-count);
   }
   /** 标记 bridge.ready 已收到 */
@@ -32061,7 +32061,7 @@ var MCPServerBridge = class {
       "connection-status",
       RESOURCE_URIS.status,
       async (_uri, _extra) => {
-        const status = getStatus();
+        const status = await getStatus();
         let mapState = null;
         if (status.connected) {
           try {
@@ -32080,7 +32080,7 @@ var MCPServerBridge = class {
       "recent-events",
       RESOURCE_URIS.events,
       async (_uri, _extra) => {
-        const events = this.bridgeClient.getRecentEvents(100);
+        const events = await this.bridgeClient.getRecentEvents(100);
         return {
           contents: [{ uri: RESOURCE_URIS.events, mimeType: JSON_MIME, text: JSON.stringify(events) }]
         };
@@ -32090,7 +32090,7 @@ var MCPServerBridge = class {
       "portal-selection",
       RESOURCE_URIS.selection,
       async (_uri, _extra) => {
-        const status = getStatus();
+        const status = await getStatus();
         if (!status.connected) {
           return {
             contents: [{ uri: RESOURCE_URIS.selection, mimeType: JSON_MIME, text: "null" }]
