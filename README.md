@@ -25,6 +25,13 @@ CLI entry:
 npx github:comicchang/iitc-mcp serve
 ```
 
+Add `--read-only` for read-only mode (14 tools; omits `iitc_send_comm` and `iitc_redeem_code`):
+
+```bash
+npx github:comicchang/iitc-mcp serve --read-only
+```
+
+
 **Codex** (`~/.codex/config.toml` or project-level `.codex/config.toml`):
 
 ```toml
@@ -60,7 +67,7 @@ args = ["github:comicchang/iitc-mcp", "serve"]
 
 </details>
 
-Reload MCP config and you're set — 16 tools auto-register.
+Reload MCP config and you're set — 16 tools auto-register (14 if server started with `--read-only`).
 
 Open [https://intel.ingress.com](https://intel.ingress.com). Once both the userscript and MCP server are ready, the `MCP` indicator in IITC Toolbox turns green.
 
@@ -163,7 +170,7 @@ Three packages:
 git clone https://github.com/comicchang/iitc-mcp.git
 cd iitc-mcp
 npm ci --legacy-peer-deps
-npm run build && npm test        # 61 tests, typecheck, 3 build artifacts
+npm run build && npm test        # 163 tests, typecheck, 3 build artifacts
 ```
 
 Daily dev commands:
@@ -172,11 +179,14 @@ Daily dev commands:
 npm run typecheck    # strict TypeScript
 npm run build        # userscript + server
 npm run lint         # ESLint
-npm test             # unit tests (61)
+npm test             # unit tests (163)
 npm run test:smoke   # no-browser smoke tests
 
 # Start MCP server locally
 npx tsx packages/mcp-server/src/cli.ts serve
+
+# Read-only mode
+npx tsx packages/mcp-server/src/cli.ts serve --read-only
 ```
 
 ## License

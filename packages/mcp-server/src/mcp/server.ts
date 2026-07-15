@@ -123,14 +123,18 @@ function normalizeBridgeError(err: unknown): BridgeError {
 
 export interface MCPServerBridgeOptions {
   bridgeClient: BridgeClient;
+  /** When true, skip registering destructive tools (send_comm, redeem_code). */
+  readOnly?: boolean;
 }
 
 export class MCPServerBridge {
   readonly mcpServer: McpServer;
   private readonly bridgeClient: BridgeClient;
+  private readonly readOnly: boolean;
 
   constructor(opts: MCPServerBridgeOptions) {
     this.bridgeClient = opts.bridgeClient;
+    this.readOnly = opts.readOnly ?? false;
     this.mcpServer = new McpServer({
       name: "iitc-mcp",
       version: "0.1.0",
@@ -146,310 +150,340 @@ export class MCPServerBridge {
     const call = this.bridgeClient.call.bind(this.bridgeClient);
     const TIMEOUT = 30_000;
 
-    // --- Read-only tools ---
+    const reg = (readOnly: boolean, fn: () => void) => {
+      if (!this.readOnly || readOnly) fn();
+    };
 
     // iitc_get_map_state
-    this.mcpServer.registerTool(
-      "iitc_get_map_state",
-      {
-        description: "Get the current map state: center, zoom, bounds, selected portal, and data status.",
-        outputSchema: MapStateSchema,
-      },
-      async (extra) => {
-        try {
-          const result = await call(M.getState, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_get_map_state",
+        {
+          description: "Get the current map state: center, zoom, bounds, selected portal, and data status.",
+          outputSchema: MapStateSchema,
+        },
+        async (extra) => {
+          try {
+            const result = await call(M.getState, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_list_portals
-    this.mcpServer.registerTool(
-      "iitc_list_portals",
-      {
-        description: "List portals currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-        inputSchema: ListPortalsInputSchema,
-        outputSchema: ListPortalsOutputSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.listPortals, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_list_portals",
+        {
+          description: "List portals currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+          inputSchema: ListPortalsInputSchema,
+          outputSchema: ListPortalsOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.listPortals, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_list_links
-    this.mcpServer.registerTool(
-      "iitc_list_links",
-      {
-        description: "List links currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-        inputSchema: ListLinksInputSchema,
-        outputSchema: ListLinksOutputSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.listLinks, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_list_links",
+        {
+          description: "List links currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+          inputSchema: ListLinksInputSchema,
+          outputSchema: ListLinksOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.listLinks, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_list_fields
-    this.mcpServer.registerTool(
-      "iitc_list_fields",
-      {
-        description: "List fields (control fields) currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-        inputSchema: ListFieldsInputSchema,
-        outputSchema: ListFieldsOutputSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.listFields, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_list_fields",
+        {
+          description: "List fields (control fields) currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+          inputSchema: ListFieldsInputSchema,
+          outputSchema: ListFieldsOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.listFields, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_get_portal_details
-    this.mcpServer.registerTool(
-      "iitc_get_portal_details",
-      {
-        description: "Get detailed information about a specific portal by its GUID, including mods, resonators, owner, and history.",
-        inputSchema: GetPortalDetailsInputSchema,
-        outputSchema: GetPortalDetailsOutputSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.getDetails, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_get_portal_details",
+        {
+          description: "Get detailed information about a specific portal by its GUID, including mods, resonators, owner, and history.",
+          inputSchema: GetPortalDetailsInputSchema,
+          outputSchema: GetPortalDetailsOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.getDetails, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_search
-    this.mcpServer.registerTool(
-      "iitc_search",
-      {
-        description: "Search for portals and locations using the IITC search provider. Waits for results with a quiet-window heuristic.",
-        inputSchema: SearchQueryInputSchema,
-        outputSchema: SearchQueryOutputSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.search, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_search",
+        {
+          description: "Search for portals and locations using the IITC search provider. Waits for results with a quiet-window heuristic.",
+          inputSchema: SearchQueryInputSchema,
+          outputSchema: SearchQueryOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.search, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_list_comm
-    this.mcpServer.registerTool(
-      "iitc_list_comm",
-      {
-        description: "List COMM (communication) messages from a channel. Optionally refreshes from Intel before reading.",
-        inputSchema: CommListInputSchema,
-        outputSchema: CommListOutputSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.commList, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_list_comm",
+        {
+          description: "List COMM (communication) messages from a channel. Optionally refreshes from Intel before reading.",
+          inputSchema: CommListInputSchema,
+          outputSchema: CommListOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.commList, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
-    // --- UI modification tools ---
-
     // iitc_set_map_view
-    this.mcpServer.registerTool(
-      "iitc_set_map_view",
-      {
-        description: "Set the map view to a specific lat/lng and optional zoom level. Returns the resulting map state after the move completes.",
-        inputSchema: SetViewInputSchema,
-        outputSchema: MapStateSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.setView, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_set_map_view",
+        {
+          description: "Set the map view to a specific lat/lng and optional zoom level. Returns the resulting map state after the move completes.",
+          inputSchema: SetViewInputSchema,
+          outputSchema: MapStateSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.setView, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_fit_map_bounds
-    this.mcpServer.registerTool(
-      "iitc_fit_map_bounds",
-      {
-        description: "Fit the map view to the given bounding box. Returns the resulting map state after the move completes.",
-        inputSchema: FitBoundsInputSchema,
-        outputSchema: MapStateSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.fitBounds, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_fit_map_bounds",
+        {
+          description: "Fit the map view to the given bounding box. Returns the resulting map state after the move completes.",
+          inputSchema: FitBoundsInputSchema,
+          outputSchema: MapStateSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.fitBounds, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_search_region
-    this.mcpServer.registerTool(
-      "iitc_search_region",
-      {
-        description: "Search for a named region (e.g. '青果巷社区') via Nominatim geocoding, fit the map to its bounds, and wait for map data to finish loading. Returns the resulting map state. Follow with iitc_list_portals to count portals in the region.",
-        inputSchema: SearchRegionInputSchema,
-        outputSchema: SearchRegionOutputSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.searchRegion, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_search_region",
+        {
+          description: "Search for a named region (e.g. '青果巷社区') via Nominatim geocoding, fit the map to its bounds, and wait for map data to finish loading. Returns the resulting map state. Follow with iitc_list_portals to count portals in the region.",
+          inputSchema: SearchRegionInputSchema,
+          outputSchema: SearchRegionOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.searchRegion, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_select_portal
-    this.mcpServer.registerTool(
-      "iitc_select_portal",
-      {
-        description: "Select a portal on the map by its GUID. Shows the portal in the sidebar and waits for the selection event.",
-        inputSchema: SelectPortalInputSchema,
-        outputSchema: SelectPortalOutputSchema,
-        annotations: {
-          readOnlyHint: false,
-        } satisfies ToolAnnotations,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.select, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_select_portal",
+        {
+          description: "Select a portal on the map by its GUID. Shows the portal in the sidebar and waits for the selection event.",
+          inputSchema: SelectPortalInputSchema,
+          outputSchema: SelectPortalOutputSchema,
+          annotations: {
+            readOnlyHint: false,
+          } satisfies ToolAnnotations,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.select, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
-    // --- External side-effect tools ---
-
-    // iitc_send_comm
-    this.mcpServer.registerTool(
-      "iitc_send_comm",
-      {
-        description: "Send a message to an Ingress COMM channel (all or faction). This sends a real message visible to other players.",
-        inputSchema: CommSendInputSchema,
-        outputSchema: CommSendOutputSchema,
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: true,
-          idempotentHint: false,
-        } satisfies ToolAnnotations,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.commSend, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    // iitc_send_comm — destructive, blocked in read-only mode
+    reg(false, () =>
+      this.mcpServer.registerTool(
+        "iitc_send_comm",
+        {
+          description: "Send a message to an Ingress COMM channel (all or faction). This sends a real message visible to other players.",
+          inputSchema: CommSendInputSchema,
+          outputSchema: CommSendOutputSchema,
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: false,
+          } satisfies ToolAnnotations,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.commSend, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
-    // iitc_redeem_code
-    this.mcpServer.registerTool(
-      "iitc_redeem_code",
-      {
-        description: "Submit an Ingress passcode for redemption. This is a one-time operation that awards items, AP, or XM.",
-        inputSchema: RedeemSubmitInputSchema,
-        outputSchema: RedeemSubmitOutputSchema,
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: true,
-          idempotentHint: false,
-        } satisfies ToolAnnotations,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.redeem, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    // iitc_redeem_code — destructive, blocked in read-only mode
+    reg(false, () =>
+      this.mcpServer.registerTool(
+        "iitc_redeem_code",
+        {
+          description: "Submit an Ingress passcode for redemption. This is a one-time operation that awards items, AP, or XM.",
+          inputSchema: RedeemSubmitInputSchema,
+          outputSchema: RedeemSubmitOutputSchema,
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: false,
+          } satisfies ToolAnnotations,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.redeem, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_get_self
-    this.mcpServer.registerTool(
-      "iitc_get_self",
-      {
-        description: "Return the signed-in player's own information: nickname, team, level, AP, and current XM.",
-        inputSchema: z.object({}),
-        outputSchema: SelfInfoSchema,
-      },
-      async (_args, extra) => {
-        try {
-          const result = await call(M.getSelf, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_get_self",
+        {
+          description: "Return the signed-in player's own information: nickname, team, level, AP, and current XM.",
+          inputSchema: z.object({}),
+          outputSchema: SelfInfoSchema,
+        },
+        async (_args, extra) => {
+          try {
+            const result = await call(M.getSelf, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_list_players
-    this.mcpServer.registerTool(
-      "iitc_list_players",
-      {
-        description: "List players tracked by the Player Tracker plugin with their last known position, team, and action.",
-        inputSchema: z.object({}),
-        outputSchema: z.array(PlayerSummarySchema),
-      },
-      async (_args, extra) => {
-        try {
-          const result = await call(M.listPlayers, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_list_players",
+        {
+          description: "List players tracked by the Player Tracker plugin with their last known position, team, and action.",
+          inputSchema: z.object({}),
+          outputSchema: z.array(PlayerSummarySchema),
+        },
+        async (_args, extra) => {
+          try {
+            const result = await call(M.listPlayers, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
 
     // iitc_get_player_trail
-    this.mcpServer.registerTool(
-      "iitc_get_player_trail",
-      {
-        description: "Return the trail (time-ordered events with lat/lng/action) for a specific tracked player by name.",
-        inputSchema: z.object({ name: z.string().min(1) }),
-        outputSchema: PlayerTrailSchema,
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.getTrail, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err: unknown) {
-          return toolError(normalizeBridgeError(err));
-        }
-      },
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_get_player_trail",
+        {
+          description: "Return the trail (time-ordered events with lat/lng/action) for a specific tracked player by name.",
+          inputSchema: z.object({ name: z.string().min(1) }),
+          outputSchema: PlayerTrailSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.getTrail, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
     );
   }
 

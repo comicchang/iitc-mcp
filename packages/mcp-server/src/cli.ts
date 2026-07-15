@@ -62,7 +62,10 @@ async function serve(args: string[]): Promise<void> {
     }
   }
 
+  const readOnly = args.includes("--read-only");
+
   let bridgeClient: InstanceType<typeof BridgeBroker> | InstanceType<typeof RemoteBridgeClient>;
+
   let httpServer: { port: number; close: () => Promise<void> } | undefined;
 
   if (brokerUrl) {
@@ -76,12 +79,11 @@ async function serve(args: string[]): Promise<void> {
     bridgeClient = broker;
     console.error(`Bridge origin: http://127.0.0.1:${httpServer.port}`);
   }
-
   const tokenInfo = getOrCreateToken();
   console.error(`Token: ${tokenInfo.token}`);
-  console.error(`iitc-mcp server ready`);
+  console.error(`iitc-mcp server ready${readOnly ? " (read-only mode)" : ""}`);
 
-  const mcpBridge = new MCPServerBridge({ bridgeClient });
+  const mcpBridge = new MCPServerBridge({ bridgeClient, readOnly });
   await mcpBridge.connect();
 
   let shuttingDown = false;
@@ -119,7 +121,7 @@ function printUsage(): void {
   console.error("");
   console.error("Commands:");
   console.error("  broker [--port <port>]                           Start standalone broker daemon");
-  console.error("  serve [--bridge-port <port>] [--broker-url URL]  Start MCP server");
+  console.error("  serve [--bridge-port <port>] [--broker-url URL] [--read-only]  Start MCP server");
   console.error("  token show                                       Show current bridge token");
   console.error("  token rotate                                     Rotate bridge token");
 }

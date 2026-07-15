@@ -169,6 +169,10 @@ const ALL_TOOL_NAMES = [
   "iitc_set_map_view",
 ];
 
+const READ_ONLY_TOOL_NAMES = ALL_TOOL_NAMES.filter(
+  (n) => n !== "iitc_send_comm" && n !== "iitc_redeem_code"
+);
+
 const RESOURCE_URIS = [
   "iitc://status",
   "iitc://events/recent",
@@ -229,6 +233,25 @@ describe("MCPServerBridge", () => {
         expect(tool.description).toBeTruthy();
         expect(typeof tool.description).toBe("string");
       }
+
+      await cleanup(bridge, client, clientTransport, serverTransport);
+    });
+
+    it("registers only 14 tools when readOnly", async () => {
+      const mock = createMockBridgeClient();
+      const bridge = new MCPServerBridge({ bridgeClient: mock.client, readOnly: true });
+      const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+      await bridge.mcpServer.connect(serverTransport);
+      const client = new Client({ name: "test-client", version: "1.0.0" });
+      await client.connect(clientTransport);
+
+      const result = await client.listTools();
+      const toolNames = result.tools.map((t) => t.name).sort();
+      const expected = [...READ_ONLY_TOOL_NAMES].sort();
+
+      expect(toolNames).toEqual(expected);
+      expect(toolNames).not.toContain("iitc_send_comm");
+      expect(toolNames).not.toContain("iitc_redeem_code");
 
       await cleanup(bridge, client, clientTransport, serverTransport);
     });
