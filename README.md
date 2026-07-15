@@ -147,7 +147,7 @@ iitc_list_comm(channel="all")       → 最近消息
 
 ```mermaid
 graph LR
-    US[Browserscript] -->|HTTP :27342| S[Server]
+    US[Userscript] -->|HTTP :27342| S[Server]
     S -->|stdio| AGENT[AI Agent]
 ```
 
@@ -155,15 +155,12 @@ graph LR
 
 ```mermaid
 graph LR
-    US[Browserscript] -->|HTTP :27342| BR[Bridge Broker]
-    BR -->|/mcp/*| MCP_A[MCP Server A]
-    BR -->|/mcp/*| MCP_B[MCP Server B]
-    MCP_A -->|stdio| AGENT_A[AI Agent A]
-    MCP_B -->|stdio| AGENT_B[AI Agent B]
+    US[Userscript] -->|HTTP :27342| BR[Bridge Broker]
+    MCP_A[MCP Server A] -->|/mcp/*| BR
+    MCP_B[MCP Server B] -->|/mcp/*| BR
+    AGENT_A[AI Agent A] -->|stdio| MCP_A
+    AGENT_B[AI Agent B] -->|stdio| MCP_B
 ```
-
-```bash
-iitc-mcp broker                          # start standalone broker
 iitc-mcp serve --broker-url http://...   # connect to shared broker
 ```
 
