@@ -161,9 +161,11 @@ graph LR
     AGENT_A[AI Agent A] -->|stdio| MCP_A
     AGENT_B[AI Agent B] -->|stdio| MCP_B
 ```
+
+```bash
+iitc-mcp broker                          # start standalone broker
 iitc-mcp serve --broker-url http://...   # connect to shared broker
 ```
-
 Commands are queued by ID — simultaneous operations may interfere.
 In practice, only one agent operates at a time.
 
