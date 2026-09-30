@@ -1,0 +1,21 @@
+{
+  "mcp": {
+    "iitc-mcp": {
+      "type": "local",
+      "command": [
+        "~/.claude/bin/iitc-mcp"
+      ],
+      "enabled": true
+    },
+    "chrome-devtools": {
+      "type": "local",
+      "command": [
+        "chrome-devtools-mcp"
+      ],
+      "args": [
+        "--autoConnect"
+      ],
+      "enabled": true
+    }
+  }
+}

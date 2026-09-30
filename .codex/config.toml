@@ -1,0 +1,9 @@
+[mcp_servers."iitc-mcp"]
+type = "stdio"
+command = "~/.claude/bin/iitc-mcp"
+args = []
+
+[mcp_servers."chrome-devtools"]
+type = "stdio"
+command = "chrome-devtools-mcp"
+args = ["--autoConnect"]
