@@ -11,13 +11,24 @@ import type { SessionStatus, BridgeClient } from "./broker.js";
 
 export interface RemoteBrokerOptions {
 	brokerUrl: string;
+	token?: string;
 }
 
 export class RemoteBridgeClient implements BridgeClient {
 	private readonly baseUrl: string;
+	private readonly token?: string;
 
 	constructor(opts: RemoteBrokerOptions) {
 		this.baseUrl = opts.brokerUrl.replace(/\/$/, "");
+		this.token = opts.token;
+	}
+
+	private buildHeaders(extra?: Record<string, string>): Record<string, string> {
+		const headers: Record<string, string> = { ...extra };
+		if (this.token) {
+			headers.Authorization = `Bearer ${this.token}`;
+		}
+		return headers;
 	}
 
 	async call(
@@ -36,10 +47,25 @@ export class RemoteBridgeClient implements BridgeClient {
 		try {
 			const resp = await fetch(`${this.baseUrl}/mcp/call`, {
 				method: "POST",
-				headers: { "Content-Type": "application/json" },
+				headers: this.buildHeaders({ "Content-Type": "application/json" }),
 				body: JSON.stringify({ method, params, timeoutMs }),
 				signal: controller.signal,
 			});
+			if (!resp.ok) {
+				let errBody: { error?: BridgeError } | undefined;
+				try {
+					errBody = (await resp.json()) as { error?: BridgeError };
+				} catch {
+					// non-JSON error response
+				}
+				throw (
+					errBody?.error ?? {
+						code: resp.status === 401 ? "UNAUTHORIZED" : "UPSTREAM_ERROR",
+						message: `Broker HTTP ${resp.status}`,
+						retryable: resp.status >= 500,
+					}
+				);
+			}
 			const body = (await resp.json()) as {
 				ok: boolean;
 				result?: unknown;
@@ -60,12 +86,30 @@ export class RemoteBridgeClient implements BridgeClient {
 	}
 
 	async getConnectionStatus(): Promise<SessionStatus> {
-		const resp = await fetch(`${this.baseUrl}/mcp/status`);
+		const resp = await fetch(`${this.baseUrl}/mcp/status`, {
+			headers: this.buildHeaders(),
+		});
+		if (!resp.ok) {
+			throw {
+				code: resp.status === 401 ? "UNAUTHORIZED" : "UPSTREAM_ERROR",
+				message: `Broker HTTP ${resp.status}`,
+				retryable: resp.status >= 500,
+			} satisfies BridgeError;
+		}
 		return resp.json() as Promise<SessionStatus>;
 	}
 
 	async getRecentEvents(count = 100): Promise<BridgeEvent[]> {
-		const resp = await fetch(`${this.baseUrl}/mcp/events?count=${count}`);
+		const resp = await fetch(`${this.baseUrl}/mcp/events?count=${count}`, {
+			headers: this.buildHeaders(),
+		});
+		if (!resp.ok) {
+			throw {
+				code: resp.status === 401 ? "UNAUTHORIZED" : "UPSTREAM_ERROR",
+				message: `Broker HTTP ${resp.status}`,
+				retryable: resp.status >= 500,
+			} satisfies BridgeError;
+		}
 		const body = (await resp.json()) as { events: BridgeEvent[] };
 		return body.events;
 	}

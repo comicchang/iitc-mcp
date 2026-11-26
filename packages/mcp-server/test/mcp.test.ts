@@ -133,6 +133,35 @@ function createMockBridgeClient(overrides?: {
           case "entities.list_portals": return { items: [PORTAL_SUMMARY], nextCursor: undefined, complete: false, reason: "IITC_VIEWPORT_CACHE" };
           case "entities.list_links": return { items: [LINK_SUMMARY], nextCursor: undefined, complete: false, reason: "IITC_VIEWPORT_CACHE" };
           case "entities.list_fields": return { items: [FIELD_SUMMARY], nextCursor: undefined, complete: false, reason: "IITC_VIEWPORT_CACHE" };
+          case "entities.region_summary": return {
+            bounds: MAP_STATE.bounds,
+            totalPortals: 1,
+            byTeam: { E: 0, R: 1, N: 0, M: 0 },
+            byLevel: { "7": 1 },
+            linksCount: 1,
+            fieldsCount: 1,
+            complete: false,
+            reason: "IITC_VIEWPORT_CACHE",
+          };
+          case "entities.export_geojson": return {
+            type: "FeatureCollection",
+            features: [
+              {
+                type: "Feature",
+                id: PORTAL_SUMMARY.guid,
+                geometry: { type: "Point", coordinates: [PORTAL_SUMMARY.lng, PORTAL_SUMMARY.lat] },
+                properties: { entityType: "portal", guid: PORTAL_SUMMARY.guid, team: PORTAL_SUMMARY.team },
+              },
+            ],
+            metadata: {
+              bounds: MAP_STATE.bounds,
+              portalCount: 1,
+              linkCount: 0,
+              fieldCount: 0,
+              complete: false,
+              reason: "IITC_VIEWPORT_CACHE",
+            },
+          };
           case "portal.get_details": return PORTAL_DETAILS;
           case "portal.select": return { selectedPortalGuid: "abc123" };
           case "search.query": return SEARCH_RESULT;
@@ -151,10 +180,12 @@ function createMockBridgeClient(overrides?: {
 // ── Test Helpers ──────────────────────────────────────────────
 
 const ALL_TOOL_NAMES = [
+  "iitc_export_geojson",
   "iitc_fit_map_bounds",
   "iitc_get_map_state",
   "iitc_get_player_trail",
   "iitc_get_portal_details",
+  "iitc_get_region_summary",
   "iitc_get_self",
   "iitc_list_comm",
   "iitc_list_fields",
@@ -208,7 +239,7 @@ async function cleanup(
 
 describe("MCPServerBridge", () => {
   describe("tool registration", () => {
-    it("registers all 16 tools", async () => {
+    it("registers all 18 tools", async () => {
       const mock = createMockBridgeClient();
       const bridge = new MCPServerBridge({ bridgeClient: mock.client });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -237,7 +268,7 @@ describe("MCPServerBridge", () => {
       await cleanup(bridge, client, clientTransport, serverTransport);
     });
 
-    it("registers only 14 tools when readOnly", async () => {
+    it("registers only 16 tools when readOnly", async () => {
       const mock = createMockBridgeClient();
       const bridge = new MCPServerBridge({ bridgeClient: mock.client, readOnly: true });
       const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -318,6 +349,41 @@ describe("MCPServerBridge", () => {
       expect(mock.calls).toHaveLength(1);
       expect(mock.calls[0].method).toBe("redeem.submit");
       expect(mock.calls[0].params).toEqual({ passcode: "VALID-CODE-123" });
+
+      await cleanup(bridge, client, clientTransport, serverTransport);
+    });
+
+    it("calls iitc_get_region_summary", async () => {
+      const { bridge, client, mock, clientTransport, serverTransport } = await setupServerAndClient();
+
+      const result = await client.callTool({
+        name: "iitc_get_region_summary",
+        arguments: { scope: "viewport" },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mock.calls).toHaveLength(1);
+      expect(mock.calls[0].method).toBe("entities.region_summary");
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.totalPortals).toBe(1);
+
+      await cleanup(bridge, client, clientTransport, serverTransport);
+    });
+
+    it("calls iitc_export_geojson", async () => {
+      const { bridge, client, mock, clientTransport, serverTransport } = await setupServerAndClient();
+
+      const result = await client.callTool({
+        name: "iitc_export_geojson",
+        arguments: { scope: "viewport", includeLinks: true },
+      });
+
+      expect(result.isError).toBeFalsy();
+      expect(mock.calls).toHaveLength(1);
+      expect(mock.calls[0].method).toBe("entities.export_geojson");
+      const parsed = JSON.parse(result.content[0].text);
+      expect(parsed.type).toBe("FeatureCollection");
+      expect(parsed.features).toHaveLength(1);
 
       await cleanup(bridge, client, clientTransport, serverTransport);
     });
@@ -521,7 +587,7 @@ describe("MCPServerBridge", () => {
 
       // Should be able to list tools
       const tools = await client.listTools();
-      expect(tools.tools.length).toBe(16);
+      expect(tools.tools.length).toBe(18);
 
       await cleanup(bridge, client, clientTransport, serverTransport);
     });

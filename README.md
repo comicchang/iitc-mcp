@@ -25,7 +25,7 @@ CLI entry:
 npx github:comicchang/iitc-mcp serve
 ```
 
-Add `--read-only` for read-only mode (14 tools; omits `iitc_send_comm` and `iitc_redeem_code`):
+Add `--read-only` for read-only mode (16 tools; omits `iitc_send_comm` and `iitc_redeem_code` and blocks them at the broker layer):
 
 ```bash
 npx github:comicchang/iitc-mcp serve --read-only
@@ -67,12 +67,12 @@ args = ["github:comicchang/iitc-mcp", "serve"]
 
 </details>
 
-Reload MCP config and you're set — 16 tools auto-register (14 if server started with `--read-only`).
+Reload MCP config and you're set — 18 tools auto-register (16 if server started with `--read-only`).
 
 Open [https://intel.ingress.com](https://intel.ingress.com). Once both the userscript and MCP server are ready, the `MCP` indicator in IITC Toolbox turns green.
 
 
-## MCP Tools (16 total)
+## MCP Tools (18 total)
 
 | Tool | Description |
 | ------ | ------------- |
@@ -83,6 +83,8 @@ Open [https://intel.ingress.com](https://intel.ingress.com). Once both the users
 | `iitc_list_portals` | List portals in viewport (paginated) |
 | `iitc_list_links` | List links in viewport (paginated) |
 | `iitc_list_fields` | List control fields in viewport (paginated) |
+| `iitc_get_region_summary` | Summarize viewport portals by team (E/R/N/M), level (0–8), links, and fields |
+| `iitc_export_geojson` | Export viewport entities as RFC 7946 GeoJSON FeatureCollection |
 | `iitc_get_portal_details` | Portal detail: mods, resonators, link/field GUIDs |
 | `iitc_select_portal` | Select a portal on the map |
 | `iitc_search` | Search portals by name |
@@ -163,11 +165,10 @@ graph LR
 ```
 
 ```bash
-iitc-mcp broker                          # start standalone broker
-iitc-mcp serve --broker-url http://127.0.0.1:27342   # connect to shared broker
+iitc-mcp broker --read-only                          # start standalone broker (Bearer auth on /mcp/*, /healthz probe)
+iitc-mcp serve --broker-url http://127.0.0.1:27342   # connect to shared broker (uses token automatically)
 ```
-Commands are queued by ID — simultaneous operations may interfere.
-In practice, only one agent operates at a time.
+Viewport-mutating commands (`map.set_view`, `map.fit_bounds`, `map.search_region`, `portal.select`) are serialized FIFO in the broker to avoid concurrent multi-agent viewport races. `/mcp/*` endpoints enforce Bearer token authentication by default (pass `--no-auth` to opt out on trusted local setups).
 
 Three packages:
 
@@ -181,7 +182,7 @@ Three packages:
 git clone https://github.com/comicchang/iitc-mcp.git
 cd iitc-mcp
 npm ci --legacy-peer-deps
-npm run build && npm test        # 163 tests, typecheck, 3 build artifacts
+npm run build && npm test        # 178 tests, typecheck, 3 build artifacts
 ```
 
 Daily dev commands:
@@ -190,7 +191,7 @@ Daily dev commands:
 npm run typecheck    # strict TypeScript
 npm run build        # userscript + server
 npm run lint         # ESLint
-npm test             # unit tests (163)
+npm test             # unit tests (178)
 npm run test:smoke   # no-browser smoke tests
 
 # Start MCP server locally

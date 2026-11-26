@@ -28,6 +28,10 @@ import {
   SearchQueryInputSchema,
   CommListInputSchema,
   RedeemSubmitInputSchema,
+  RegionSummaryInputSchema,
+  RegionSummaryOutputSchema,
+  ExportGeoJsonInputSchema,
+  ExportGeoJsonOutputSchema,
 } from "../src/schemas.js";
 
 const fixtureDir = resolve(import.meta.dirname, "../../../fixtures/protocol");
@@ -242,5 +246,49 @@ describe("Protocol schemas — BridgeCommand/Completion/Event", () => {
       }],
     });
     expect(req.events).toHaveLength(1);
+  });
+
+  it("valid RegionSummary schemas", () => {
+    const input = RegionSummaryInputSchema.parse({});
+    expect(input.scope).toBe("viewport");
+    const output = RegionSummaryOutputSchema.parse({
+      bounds: { south: 51.49, west: -0.15, north: 51.52, east: -0.1 },
+      totalPortals: 4,
+      byTeam: { E: 2, R: 1, N: 1, M: 0 },
+      byLevel: { "0": 1, "6": 2, "8": 1 },
+      linksCount: 3,
+      fieldsCount: 1,
+      complete: false,
+      reason: "IITC_VIEWPORT_CACHE",
+    });
+    expect(output.totalPortals).toBe(4);
+    expect(output.byTeam.E).toBe(2);
+  });
+
+  it("valid ExportGeoJson schemas", () => {
+    const input = ExportGeoJsonInputSchema.parse({ includeLinks: true, includeFields: true });
+    expect(input.scope).toBe("viewport");
+    expect(input.includeLinks).toBe(true);
+    const output = ExportGeoJsonOutputSchema.parse({
+      type: "FeatureCollection",
+      features: [
+        {
+          type: "Feature",
+          id: "portal-1",
+          geometry: { type: "Point", coordinates: [-0.1278, 51.5074] },
+          properties: { entityType: "portal", guid: "portal-1", team: "E", level: 7 },
+        },
+      ],
+      metadata: {
+        bounds: { south: 51.49, west: -0.15, north: 51.52, east: -0.1 },
+        portalCount: 1,
+        linkCount: 0,
+        fieldCount: 0,
+        complete: false,
+        reason: "IITC_VIEWPORT_CACHE",
+      },
+    });
+    expect(output.type).toBe("FeatureCollection");
+    expect(output.features).toHaveLength(1);
   });
 });

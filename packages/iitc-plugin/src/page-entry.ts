@@ -72,14 +72,6 @@ function showStatusIndicator(connected: boolean): void {
   }
 }
 
-/** 移除 Toolbox 中的 MCP 状态入口。 */
-function removeStatusIndicator(): void {
-  if (statusToolboxLink) {
-    statusToolboxLink.remove();
-    statusToolboxLink = null;
-  }
-}
-
 // 保存 handler 引用以便清理时移除
 let cmdListener: EventListener | null = null;
 let moveEndHandler: (() => void) | null = null;

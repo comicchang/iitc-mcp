@@ -215,7 +215,7 @@ describe("BridgeTransport", () => {
     expect(captured[0].headers["Content-Type"]).toBe("application/json; charset=utf-8");
     expect(captured[0].body).toMatchObject({
       protocolVersion: 1,
-      pluginVersion: "1.0.0",
+      pluginVersion: "1.2.0",
       capabilities: expect.arrayContaining(["map", "entities", "portal", "self", "tracker"]),
     });
   });
@@ -533,5 +533,57 @@ describe("BridgeTransport", () => {
         details: { reason: "EVENT_ITEM_TOO_LARGE" },
       },
     });
+  });
+
+  // ─── Configurable origin & pluginVersion ─────────────
+
+  it("uses custom loopback origin and pluginVersion when provided", async () => {
+    let connectUrl = "";
+    let connectBody: Record<string, unknown> | undefined;
+    const gm = once([
+      (d) => {
+        connectUrl = d.url;
+        connectBody = d.data ? (JSON.parse(d.data) as Record<string, unknown>) : undefined;
+        d.onload(makeGMResponse({ finalUrl: "http://127.0.0.1:28000/bridge/v1/connect", responseText: JSON.stringify(CONNECT_RESP) }));
+      },
+      (d) => {
+        d.onload(makeGMResponse({ finalUrl: "http://127.0.0.1:28000/bridge/v1/poll", responseText: '{"commands":[]}' }));
+      },
+    ]);
+    makeMockDocument();
+    const transport = new BridgeTransport({
+      channelId: CHANNEL,
+      gmXmlHttpRequest: gm,
+      origin: "http://127.0.0.1:28000",
+      pluginVersion: "1.2.0",
+    });
+    transport.start();
+    await flush();
+    transport.stop();
+
+    expect(connectUrl).toBe("http://127.0.0.1:28000/bridge/v1/connect");
+    expect(connectBody?.pluginVersion).toBe("1.2.0");
+  });
+
+  it("falls back to default origin if configured origin is non-loopback", async () => {
+    let connectUrl = "";
+    const gm = once([
+      (d) => {
+        connectUrl = d.url;
+        d.onload(makeGMResponse({ responseText: JSON.stringify(CONNECT_RESP) }));
+      },
+      respondJson("/bridge/v1/poll", { commands: [] }),
+    ]);
+    makeMockDocument();
+    const transport = new BridgeTransport({
+      channelId: CHANNEL,
+      gmXmlHttpRequest: gm,
+      origin: "https://example.com:27342",
+    });
+    transport.start();
+    await flush();
+    transport.stop();
+
+    expect(connectUrl).toBe("http://127.0.0.1:27342/bridge/v1/connect");
   });
 });

@@ -36,6 +36,9 @@ function getReleaseBase(): string {
 // ─── Userscript bundle ────────────────────────────────
 
 async function buildUserscript(): Promise<void> {
+  const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
+  const version: string = pkg.version;
+
   // Bundle page-adapter + page-entry into a self-contained IIFE for injection
   const pageBundle = await build({
     entryPoints: [resolve(ROOT, "packages/iitc-plugin/src/page-entry.ts")],
@@ -60,6 +63,7 @@ async function buildUserscript(): Promise<void> {
     minify: false,
     define: {
       PAGE_ADAPTER_SOURCE: JSON.stringify(pageCode),
+      PLUGIN_VERSION: JSON.stringify(version),
     },
   });
 
@@ -67,8 +71,6 @@ async function buildUserscript(): Promise<void> {
 
   // Metadata — 从 package.json 读取版本，动态生成 release URL
   const releaseBase = getReleaseBase();
-  const pkg = JSON.parse(readFileSync(resolve(ROOT, "package.json"), "utf-8"));
-  const version: string = pkg.version;
   const metadata = [
     "// ==UserScript==",
     "// @name         IITC MCP Bridge",
@@ -77,6 +79,7 @@ async function buildUserscript(): Promise<void> {
     "// @description  Bridge between IITC and MCP (Model Context Protocol) agents",
     "// @match        https://intel.ingress.com/*",
     "// @grant        GM_xmlhttpRequest",
+    "// @grant        GM_getValue",
     "// @connect      127.0.0.1",
     `// @updateURL    ${releaseBase}/iitc-mcp.meta.js`,
     `// @downloadURL  ${releaseBase}/iitc-mcp.user.js`,

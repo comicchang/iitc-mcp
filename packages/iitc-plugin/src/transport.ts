@@ -61,6 +61,8 @@ export type GMRegisterMenuCommand = (
 export interface BridgeTransportOptions {
   channelId: string;
   gmXmlHttpRequest: GMXmlHttpRequest;
+  origin?: string;
+  pluginVersion?: string;
   onConnectionChange?: (connected: boolean) => void;
 }
 
@@ -89,8 +91,10 @@ const BRIDGE_CAPABILITIES = [
 
 export class BridgeTransport {
   private static readonly DEFAULT_ORIGIN = "http://127.0.0.1:27342";
+  private static readonly DEFAULT_PLUGIN_VERSION = "1.2.0";
 
   private origin: string;
+  private pluginVersion: string;
   private channelId: string;
   private gmXmlHttpRequest: GMXmlHttpRequest;
   private onConnectionChange?: (connected: boolean) => void;
@@ -116,7 +120,11 @@ export class BridgeTransport {
   private backoffIndex = 0;
 
   constructor(options: BridgeTransportOptions) {
-    this.origin = BridgeTransport.DEFAULT_ORIGIN;
+    this.origin =
+      options.origin && validateOrigin(options.origin)
+        ? options.origin
+        : BridgeTransport.DEFAULT_ORIGIN;
+    this.pluginVersion = options.pluginVersion || BridgeTransport.DEFAULT_PLUGIN_VERSION;
     this.channelId = options.channelId;
     this.gmXmlHttpRequest = options.gmXmlHttpRequest;
     this.onConnectionChange = options.onConnectionChange;
@@ -194,7 +202,7 @@ export class BridgeTransport {
 
     const req = {
       protocolVersion: 1,
-      pluginVersion: "1.0.0",
+      pluginVersion: this.pluginVersion,
       iitcVersion,
       tabId: this.generateId(),
       capabilities: BRIDGE_CAPABILITIES,

@@ -37,6 +37,11 @@ import type {
   ListLinksOutputSchema,
   ListFieldsInputSchema,
   ListFieldsOutputSchema,
+  RegionSummaryInputSchema,
+  RegionSummaryOutputSchema,
+  GeoJsonFeatureSchema,
+  ExportGeoJsonInputSchema,
+  ExportGeoJsonOutputSchema,
   GetPortalDetailsInputSchema,
   GetPortalDetailsOutputSchema,
   SelectPortalInputSchema,
@@ -97,6 +102,11 @@ export type ListLinksInput = z.infer<typeof ListLinksInputSchema>;
 export type ListLinksOutput = z.infer<typeof ListLinksOutputSchema>;
 export type ListFieldsInput = z.infer<typeof ListFieldsInputSchema>;
 export type ListFieldsOutput = z.infer<typeof ListFieldsOutputSchema>;
+export type RegionSummaryInput = z.infer<typeof RegionSummaryInputSchema>;
+export type RegionSummaryOutput = z.infer<typeof RegionSummaryOutputSchema>;
+export type GeoJsonFeature = z.infer<typeof GeoJsonFeatureSchema>;
+export type ExportGeoJsonInput = z.infer<typeof ExportGeoJsonInputSchema>;
+export type ExportGeoJsonOutput = z.infer<typeof ExportGeoJsonOutputSchema>;
 export type GetPortalDetailsInput = z.infer<typeof GetPortalDetailsInputSchema>;
 export type GetPortalDetailsOutput = z.infer<typeof GetPortalDetailsOutputSchema>;
 export type SelectPortalInput = z.infer<typeof SelectPortalInputSchema>;

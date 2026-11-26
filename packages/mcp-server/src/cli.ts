@@ -32,12 +32,27 @@ async function brokerCmd(args: string[]): Promise<void> {
   const portIdx = args.indexOf("--port");
   if (portIdx !== -1 && args[portIdx + 1]) {
     port = parseInt(args[portIdx + 1], 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      console.error("Error: --port must be 1-65535");
+      process.exit(1);
+    }
   }
-  const broker = new BridgeBroker();
-  const httpServer = await startServer(broker, { port });
+  const readOnly = args.includes("--read-only");
+  const noAuth = args.includes("--no-auth");
   const tokenInfo = getOrCreateToken();
-  console.error(`Bridge broker listening on http://127.0.0.1:${httpServer.port}`);
-  console.error(`Token: ${tokenInfo.token}`);
+  const broker = new BridgeBroker({ readOnly });
+  const httpServer = await startServer(broker, {
+    port,
+    getAuthToken: noAuth ? undefined : () => getToken().token,
+  });
+  console.error(
+    `Bridge broker listening on http://127.0.0.1:${httpServer.port}${readOnly ? " (read-only mode)" : ""}`,
+  );
+  if (noAuth) {
+    console.error("Warning: /mcp/* Bearer authentication disabled (--no-auth)");
+  } else {
+    console.error(`Token: ${tokenInfo.token}`);
+  }
   const shutdown = async () => {
     console.error("Shutting down broker...");
     broker.revokeSession();
@@ -63,6 +78,8 @@ async function serve(args: string[]): Promise<void> {
   }
 
   const readOnly = args.includes("--read-only");
+  const noAuth = args.includes("--no-auth");
+  const tokenInfo = getOrCreateToken();
 
   let bridgeClient: InstanceType<typeof BridgeBroker> | InstanceType<typeof RemoteBridgeClient>;
 
@@ -70,17 +87,24 @@ async function serve(args: string[]): Promise<void> {
 
   if (brokerUrl) {
     // 连接已有 broker
-    bridgeClient = new RemoteBridgeClient({ brokerUrl });
+    bridgeClient = new RemoteBridgeClient({
+      brokerUrl,
+      token: noAuth ? undefined : tokenInfo.token,
+    });
     console.error(`Connecting to remote broker: ${brokerUrl}`);
   } else {
     // 启动内嵌 broker
-    const broker = new BridgeBroker();
-    httpServer = await startServer(broker, { port });
+    const broker = new BridgeBroker({ readOnly });
+    httpServer = await startServer(broker, {
+      port,
+      getAuthToken: noAuth ? undefined : () => getToken().token,
+    });
     bridgeClient = broker;
     console.error(`Bridge origin: http://127.0.0.1:${httpServer.port}`);
   }
-  const tokenInfo = getOrCreateToken();
-  console.error(`Token: ${tokenInfo.token}`);
+  if (!noAuth) {
+    console.error(`Token: ${tokenInfo.token}`);
+  }
   console.error(`iitc-mcp server ready${readOnly ? " (read-only mode)" : ""}`);
 
   const mcpBridge = new MCPServerBridge({ bridgeClient, readOnly });
@@ -120,10 +144,10 @@ function printUsage(): void {
   console.error("Usage: iitc-mcp <command> [options]");
   console.error("");
   console.error("Commands:");
-  console.error("  broker [--port <port>]                           Start standalone broker daemon");
-  console.error("  serve [--bridge-port <port>] [--broker-url URL] [--read-only]  Start MCP server");
-  console.error("  token show                                       Show current bridge token");
-  console.error("  token rotate                                     Rotate bridge token");
+  console.error("  broker [--port <port>] [--read-only] [--no-auth]               Start standalone broker daemon");
+  console.error("  serve [--bridge-port <port>] [--broker-url URL] [--read-only] [--no-auth]  Start MCP server");
+  console.error("  token show                                                     Show current bridge token");
+  console.error("  token rotate                                                   Rotate bridge token");
 }
 
 main().catch((err: unknown) => {

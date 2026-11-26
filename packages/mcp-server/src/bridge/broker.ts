@@ -16,8 +16,13 @@ import {
   PollRequestSchema,
   EventsRequestSchema,
   BridgeEventSchema,
+  DESTRUCTIVE_BRIDGE_METHODS,
+  MAP_MUTATING_METHODS,
 } from "@iitc-mcp/protocol";
 import { randomBytes } from "node:crypto";
+
+const DESTRUCTIVE_SET = new Set<string>(DESTRUCTIVE_BRIDGE_METHODS);
+const MAP_MUTATING_SET = new Set<string>(MAP_MUTATING_METHODS);
 
 export interface SessionStatus {
   connected: boolean;
@@ -42,6 +47,7 @@ export interface PendingCall {
 export interface BridgeBrokerOptions {
   leaseMs?: number;
   maxEvents?: number;
+  readOnly?: boolean;
 }
 
 export interface BridgeClient {
@@ -66,6 +72,7 @@ export class BridgeBroker implements BridgeClient {
   } | null = null;
 
   private leaseMs: number;
+  private readOnly: boolean;
   private commandSeq = 0;
   private pendingCommands = new Map<string, PendingCall>();
   private eventRing: BridgeEvent[] = [];
@@ -74,12 +81,20 @@ export class BridgeBroker implements BridgeClient {
     resolve: (commands: BridgeCommand[]) => void;
     timer: NodeJS.Timeout;
   } | null = null;
+  private mutatingInFlight = false;
+  private mutatingWaiters: Array<() => void> = [];
 
   private readyBeforeBridgeReady = false;
 
   constructor(opts?: BridgeBrokerOptions) {
     this.leaseMs = opts?.leaseMs ?? LEASE_MS;
     this.maxEvents = opts?.maxEvents ?? MAX_EVENTS;
+    this.readOnly = opts?.readOnly ?? false;
+  }
+
+  /** 是否处于只读模式 */
+  isReadOnly(): boolean {
+    return this.readOnly;
   }
 
   /** 处理 connect 请求 */
@@ -183,6 +198,14 @@ export class BridgeBroker implements BridgeClient {
     return timer;
   }
 
+  /** 客户端提前断开时取消匹配的 long-poll 等待器，避免悬空定时器与写入已关闭响应 */
+  cancelLongPoll(callback: (commands: BridgeCommand[]) => void): void {
+    if (this.pollWaiter && this.pollWaiter.resolve === callback) {
+      clearTimeout(this.pollWaiter.timer);
+      this.pollWaiter = null;
+    }
+  }
+
   /** 处理 events 请求 */
   handleEvents(req: unknown): { status: number; body: unknown } {
     const parsed = EventsRequestSchema.safeParse(req);
@@ -208,11 +231,92 @@ export class BridgeBroker implements BridgeClient {
 
   /** 入队命令，等待完成 (BridgeClient.call) */
   call(method: BridgeMethod, params: unknown, opts?: { signal?: AbortSignal; timeoutMs?: number }): Promise<unknown> {
+    if (this.readOnly && DESTRUCTIVE_SET.has(method)) {
+      return Promise.reject(
+        this.makeError("UNSUPPORTED", `Method ${method} is disabled in read-only mode`),
+      );
+    }
     if (!this.session) {
       return Promise.reject(this.makeError("NOT_READY", "No active session"));
     }
     if (!this.readyBeforeBridgeReady && !this.canCallBeforeReady(method)) {
       return Promise.reject(this.makeError("NOT_READY", "Page adapter not ready (waiting for bridge.ready)"));
+    }
+
+    if (MAP_MUTATING_SET.has(method)) {
+      return this.callSerialized(method, params, opts);
+    }
+    return this.enqueueCall(method, params, opts);
+  }
+
+  private callSerialized(
+    method: BridgeMethod,
+    params: unknown,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<unknown> {
+    if (!this.mutatingInFlight) {
+      this.mutatingInFlight = true;
+      return this.enqueueCall(method, params, opts).finally(() => {
+        this.releaseMutatingSlot();
+      });
+    }
+
+    return new Promise<unknown>((resolve, reject) => {
+      let settled = false;
+      const onAbort = (): void => {
+        if (settled) return;
+        settled = true;
+        const idx = this.mutatingWaiters.indexOf(run);
+        if (idx !== -1) this.mutatingWaiters.splice(idx, 1);
+        reject(this.makeError("CANCELLED", "Command cancelled by client"));
+      };
+
+      const run = (): void => {
+        if (settled) {
+          this.releaseMutatingSlot();
+          return;
+        }
+        settled = true;
+        opts?.signal?.removeEventListener("abort", onAbort);
+        if (!this.session) {
+          this.releaseMutatingSlot();
+          reject(this.makeError("NOT_READY", "No active session"));
+          return;
+        }
+        this.enqueueCall(method, params, opts)
+          .then(resolve, reject)
+          .finally(() => {
+            this.releaseMutatingSlot();
+          });
+      };
+
+      if (opts?.signal) {
+        if (opts.signal.aborted) {
+          onAbort();
+          return;
+        }
+        opts.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      this.mutatingWaiters.push(run);
+    });
+  }
+
+  private releaseMutatingSlot(): void {
+    const next = this.mutatingWaiters.shift();
+    if (next) {
+      next();
+    } else {
+      this.mutatingInFlight = false;
+    }
+  }
+
+  private enqueueCall(
+    method: BridgeMethod,
+    params: unknown,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<unknown> {
+    if (!this.session) {
+      return Promise.reject(this.makeError("NOT_READY", "No active session"));
     }
 
     const timeoutMs = opts?.timeoutMs ?? 30_000;
@@ -287,6 +391,11 @@ export class BridgeBroker implements BridgeClient {
     this.failAllPending("NOT_READY", "Session destroyed");
     this.session = null;
     this.clearPollWaiter();
+    const waiters = this.mutatingWaiters.splice(0);
+    this.mutatingInFlight = false;
+    for (const run of waiters) {
+      run();
+    }
   }
 
   /** 撤销 session（token rotate 用） */

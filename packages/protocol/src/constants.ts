@@ -44,6 +44,8 @@ export const BRIDGE_METHODS = [
   "map.set_view",
   "map.fit_bounds",
   "entities.list_portals",
+  "entities.region_summary",
+  "entities.export_geojson",
   "map.search_region",
   "entities.list_links",
   "entities.list_fields",
@@ -56,6 +58,20 @@ export const BRIDGE_METHODS = [
   "tracker.get_trail",
   "comm.send",
   "redeem.submit",
+] as const;
+
+/** Methods blocked when running in read-only mode */
+export const DESTRUCTIVE_BRIDGE_METHODS = [
+  "comm.send",
+  "redeem.submit",
+] as const;
+
+/** Viewport/UI mutating methods serialized FIFO to prevent multi-agent races */
+export const MAP_MUTATING_METHODS = [
+  "map.set_view",
+  "map.fit_bounds",
+  "map.search_region",
+  "portal.select",
 ] as const;
 
 /** Bridge events */

@@ -734,4 +734,87 @@ describe("PageAdapter", () => {
       expect(() => JSON.parse(JSON.stringify(r.result))).not.toThrow();
     });
   });
+
+  // ─── entities.region_summary & entities.export_geojson ─
+
+  describe("entities.region_summary", () => {
+    it("counts visible portals by team and level along with links and fields", async () => {
+      fw.portals = {
+        "p-e": makeFakePortal("p-e", { team: "E", level: 7, title: "Green" }),
+        "p-r": makeFakePortal("p-r", { team: "R", level: 5, title: "Blue" }),
+        "p-n": makeFakePortal("p-n", { team: "N", level: 0, title: "Neutral" }),
+        "p-m": makeFakePortal("p-m", { team: "M", level: 5, title: "Machina" }),
+        "p-out": makeFakePortal("p-out", { team: "E", level: 8, latE6: 40000000, lngE6: 0 }),
+      };
+      fw.links = { "l-1": makeFakeLink("l-1", { team: "E" }) };
+      fw.fields = { "f-1": makeFakeField("f-1", { team: "E" }) };
+
+      const r = await adapter.handleCommand(cmd("entities.region_summary", { scope: "viewport" }));
+      expect(ok(r)).toBe(true);
+      if (!ok(r)) return;
+      const summary = r.result as {
+        totalPortals: number;
+        byTeam: Record<string, number>;
+        byLevel: Record<string, number>;
+        linksCount: number;
+        fieldsCount: number;
+        complete: boolean;
+        reason: string;
+      };
+      expect(summary.totalPortals).toBe(4);
+      expect(summary.byTeam).toEqual({ E: 1, R: 1, N: 1, M: 1 });
+      expect(summary.byLevel).toEqual({ "0": 1, "5": 2, "7": 1 });
+      expect(summary.linksCount).toBe(1);
+      expect(summary.fieldsCount).toBe(1);
+      expect(summary.complete).toBe(false);
+      expect(summary.reason).toBe("IITC_VIEWPORT_CACHE");
+    });
+  });
+
+  describe("entities.export_geojson", () => {
+    it("exports RFC 7946 FeatureCollection with portals, links, and closed polygon fields", async () => {
+      fw.portals = {
+        "p-b": makeFakePortal("p-b", { team: "E", level: 6, title: "Beta" }),
+        "p-a": makeFakePortal("p-a", { team: "R", level: 8, title: "Alpha" }),
+      };
+      fw.links = { "l-1": makeFakeLink("l-1", { team: "E" }) };
+      fw.fields = { "f-1": makeFakeField("f-1", { team: "E" }) };
+
+      const r = await adapter.handleCommand(cmd("entities.export_geojson", {
+        scope: "viewport",
+        includeLinks: true,
+        includeFields: true,
+      }));
+      expect(ok(r)).toBe(true);
+      if (!ok(r)) return;
+      const fc = r.result as {
+        type: string;
+        features: Array<{ id: string; geometry: { type: string; coordinates: unknown }; properties: Record<string, unknown> }>;
+        metadata: { portalCount: number; linkCount: number; fieldCount: number };
+      };
+      expect(fc.type).toBe("FeatureCollection");
+      expect(fc.metadata).toMatchObject({ portalCount: 2, linkCount: 1, fieldCount: 1 });
+      expect(fc.features.map((f) => f.id)).toEqual(["p-a", "p-b", "l-1", "f-1"]);
+      // RFC 7946 coordinate order is [lng, lat]
+      expect(fc.features[0].geometry).toEqual({ type: "Point", coordinates: [-0.1278, 51.5074] });
+      expect(fc.features[2].geometry.type).toBe("LineString");
+      expect(fc.features[3].geometry.type).toBe("Polygon");
+      const ring = (fc.features[3].geometry.coordinates as number[][][])[0];
+      expect(ring).toHaveLength(4);
+      expect(ring[0]).toEqual(ring[3]);
+    });
+
+    it("supports team filtering on export", async () => {
+      fw.portals = {
+        "p-e": makeFakePortal("p-e", { team: "E", level: 6 }),
+        "p-r": makeFakePortal("p-r", { team: "R", level: 8 }),
+      };
+      const r = await adapter.handleCommand(cmd("entities.export_geojson", { scope: "viewport", team: "E" }));
+      expect(ok(r)).toBe(true);
+      if (!ok(r)) return;
+      const fc = r.result as { features: Array<{ id: string }>; metadata: { portalCount: number } };
+      expect(fc.metadata.portalCount).toBe(1);
+      expect(fc.features[0].id).toBe("p-e");
+    });
+  });
 });

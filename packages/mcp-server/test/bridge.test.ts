@@ -10,6 +10,7 @@ import { request as httpRequest } from "node:http";
 import { setConfigDir, getToken, getOrCreateToken, rotateToken } from "../src/token.js";
 import { BridgeBroker } from "../src/bridge/broker.js";
 import { startServer, type BridgeServerHandle } from "../src/bridge/http-server.js";
+import { RemoteBridgeClient } from "../src/bridge/remote-client.js";
 
 // ─── Token management ──────────────────────────────────────
 
@@ -384,6 +385,54 @@ describe("BridgeBroker", () => {
     });
     await expect(setPromise).resolves.toBeDefined();
   });
+
+  it("readOnly broker rejects destructive methods with UNSUPPORTED", async () => {
+    const roBroker = new BridgeBroker({ readOnly: true });
+    roBroker.handleConnect(validConnect);
+    roBroker.markBridgeReady();
+
+    expect(roBroker.isReadOnly()).toBe(true);
+    await expect(roBroker.call("comm.send", { channel: "all", message: "hi" })).rejects.toMatchObject({
+      code: "UNSUPPORTED",
+    });
+    await expect(roBroker.call("redeem.submit", { passcode: "TEST" })).rejects.toMatchObject({
+      code: "UNSUPPORTED",
+    });
+  });
+
+  it("serializes concurrent map-mutating calls FIFO without interleaving", async () => {
+    const { body } = connectReady();
+    const sid = (body as { sessionId: string }).sessionId;
+
+    const p1 = broker.call("map.set_view", { lat: 10, lng: 20 });
+    const p2 = broker.call("map.fit_bounds", { south: 1, west: 2, north: 3, east: 4 });
+
+    // Only the first mutating command should be dispatched initially
+    const poll1 = broker.handlePoll({ sessionId: sid, completed: [] });
+    const cmds1 = (poll1.body as { commands: Array<{ id: string; method: string }> }).commands;
+    expect(cmds1).toHaveLength(1);
+    expect(cmds1[0].method).toBe("map.set_view");
+
+    // Completing the first command releases the second command
+    broker.handlePoll({
+      sessionId: sid,
+      completed: [{ id: cmds1[0].id, ok: true, result: { ok: 1 } }],
+    });
+    await expect(p1).resolves.toEqual({ ok: 1 });
+
+    // Allow microtask queue to release the next serialized waiter
+    await Promise.resolve();
+    const poll2 = broker.handlePoll({ sessionId: sid, completed: [] });
+    const cmds2 = (poll2.body as { commands: Array<{ id: string; method: string }> }).commands;
+    expect(cmds2).toHaveLength(1);
+    expect(cmds2[0].method).toBe("map.fit_bounds");
+
+    broker.handlePoll({
+      sessionId: sid,
+      completed: [{ id: cmds2[0].id, ok: true, result: { ok: 2 } }],
+    });
+    await expect(p2).resolves.toEqual({ ok: 2 });
+  });
 });
 
 // ─── HTTP helpers ──────────────────────────────────────────
@@ -687,5 +736,70 @@ describe("broker + HTTP round-trip", () => {
 
     const pollRes = await post("/bridge/v1/poll", { sessionId, completed: [] });
     expect(pollRes.status).toBe(401);
+  });
+
+  it("healthz returns liveness status", async () => {
+    const res = await makeGetReq(server.port, TOKEN, "/healthz");
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ ok: true, connected: false, readOnly: false });
+  });
+});
+
+// ─── HTTP Bearer auth & RemoteBridgeClient ────────────────
+
+describe("HTTP /mcp/* Bearer authentication", () => {
+  let server: BridgeServerHandle;
+  let broker: InstanceType<typeof BridgeBroker>;
+  let activeToken = "secret-mcp-token-v1";
+
+  beforeEach(async () => {
+    broker = new BridgeBroker({ readOnly: true });
+    server = await startServer(broker, {
+      port: 0,
+      getAuthToken: () => activeToken,
+    });
+  });
+
+  afterEach(async () => {
+    broker.destroySession();
+    await server.close();
+  });
+
+  it("rejects /mcp/status without Bearer token with 401", async () => {
+    const res = await makeGetReq(server.port, "", "/mcp/status");
+    expect(res.status).toBe(401);
+    const body = JSON.parse(res.body);
+    expect(body.error.code).toBe("UNAUTHORIZED");
+  });
+
+  it("allows RemoteBridgeClient with matching token and rejects after rotation", async () => {
+    const client = new RemoteBridgeClient({
+      brokerUrl: `http://127.0.0.1:${server.port}`,
+      token: activeToken,
+    });
+    const status = await client.getConnectionStatus();
+    expect(status.connected).toBe(false);
+
+    // Rotate active token; old client must now fail with UNAUTHORIZED
+    activeToken = "secret-mcp-token-v2";
+    await expect(client.getConnectionStatus()).rejects.toMatchObject({ code: "UNAUTHORIZED" });
+
+    // New client with rotated token succeeds
+    const clientV2 = new RemoteBridgeClient({
+      brokerUrl: `http://127.0.0.1:${server.port}`,
+      token: activeToken,
+    });
+    const statusV2 = await clientV2.getConnectionStatus();
+    expect(statusV2.connected).toBe(false);
+  });
+
+  it("enforces readOnly on /mcp/call even with valid Bearer token", async () => {
+    const client = new RemoteBridgeClient({
+      brokerUrl: `http://127.0.0.1:${server.port}`,
+      token: activeToken,
+    });
+    await expect(client.call("comm.send", { channel: "all", message: "test" })).rejects.toMatchObject({
+      code: "UNSUPPORTED",
+    });
   });
 });

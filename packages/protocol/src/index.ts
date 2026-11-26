@@ -2,7 +2,11 @@
  * IITC-MCP Bridge Protocol — 共享 schema 与类型定义
  * 线协议不是 MCP JSON-RPC：它是适合 GM_xmlhttpRequest 的半双工 pull-RPC
  */
-export { protocolVersion } from "./constants.js";
+export {
+  protocolVersion,
+  DESTRUCTIVE_BRIDGE_METHODS,
+  MAP_MUTATING_METHODS,
+} from "./constants.js";
 export {
   // 请求/响应 schema
   ConnectRequestSchema,
@@ -50,6 +54,11 @@ export {
   ListLinksOutputSchema,
   ListFieldsInputSchema,
   ListFieldsOutputSchema,
+  RegionSummaryInputSchema,
+  RegionSummaryOutputSchema,
+  GeoJsonFeatureSchema,
+  ExportGeoJsonInputSchema,
+  ExportGeoJsonOutputSchema,
   GetPortalDetailsInputSchema,
   GetPortalDetailsOutputSchema,
   SelectPortalInputSchema,
@@ -104,6 +113,11 @@ export type {
   ListLinksOutput,
   ListFieldsInput,
   ListFieldsOutput,
+  RegionSummaryInput,
+  RegionSummaryOutput,
+  GeoJsonFeature,
+  ExportGeoJsonInput,
+  ExportGeoJsonOutput,
   GetPortalDetailsInput,
   GetPortalDetailsOutput,
   SelectPortalInput,

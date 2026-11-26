@@ -21,6 +21,10 @@ import {
   ListLinksOutputSchema,
   ListFieldsInputSchema,
   ListFieldsOutputSchema,
+  RegionSummaryInputSchema,
+  RegionSummaryOutputSchema,
+  ExportGeoJsonInputSchema,
+  ExportGeoJsonOutputSchema,
   SelfInfoSchema,
   PlayerSummarySchema,
   PlayerTrailSchema,
@@ -61,6 +65,8 @@ const M = {
   listPortals: "entities.list_portals",
   listLinks: "entities.list_links",
   listFields: "entities.list_fields",
+  regionSummary: "entities.region_summary",
+  exportGeoJson: "entities.export_geojson",
   getDetails: "portal.get_details",
   select: "portal.select",
   search: "search.query",
@@ -137,7 +143,7 @@ export class MCPServerBridge {
     this.readOnly = opts.readOnly ?? false;
     this.mcpServer = new McpServer({
       name: "iitc-mcp",
-      version: "0.1.0",
+      version: "1.2.0",
     });
 
     this.registerTools();
@@ -225,6 +231,46 @@ export class MCPServerBridge {
         async (args, extra) => {
           try {
             const result = await call(M.listFields, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
+    );
+
+    // iitc_get_region_summary
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_get_region_summary",
+        {
+          description: "Summarize entities visible in the current IITC viewport: total portals, counts by faction (E/R/N/M) and level (0-8), links count, fields count, and bounds.",
+          inputSchema: RegionSummaryInputSchema,
+          outputSchema: RegionSummaryOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.regionSummary, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err: unknown) {
+            return toolError(normalizeBridgeError(err));
+          }
+        },
+      ),
+    );
+
+    // iitc_export_geojson
+    reg(true, () =>
+      this.mcpServer.registerTool(
+        "iitc_export_geojson",
+        {
+          description: "Export entities visible in the current IITC viewport as a standard RFC 7946 GeoJSON FeatureCollection (portals as Points, optionally links as LineStrings and fields as Polygons).",
+          inputSchema: ExportGeoJsonInputSchema,
+          outputSchema: ExportGeoJsonOutputSchema,
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.exportGeoJson, args, { signal: extra.signal, timeoutMs: TIMEOUT });
             return toolSuccess(result);
           } catch (err: unknown) {
             return toolError(normalizeBridgeError(err));

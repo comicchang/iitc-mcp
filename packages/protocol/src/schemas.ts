@@ -365,6 +365,71 @@ export const ListFieldsOutputSchema = PagedResultSchema.extend({
   items: z.array(FieldSummarySchema),
 });
 
+// entities.region_summary
+export const RegionSummaryInputSchema = z.object({
+  scope: z.literal("viewport").default("viewport"),
+});
+export const RegionSummaryOutputSchema = z.object({
+  bounds: BoundsSchema,
+  totalPortals: z.number().int().nonnegative(),
+  byTeam: z.object({
+    E: z.number().int().nonnegative(),
+    R: z.number().int().nonnegative(),
+    N: z.number().int().nonnegative(),
+    M: z.number().int().nonnegative(),
+  }),
+  byLevel: z.record(z.string(), z.number().int().nonnegative()),
+  linksCount: z.number().int().nonnegative(),
+  fieldsCount: z.number().int().nonnegative(),
+  complete: z.literal(false),
+  reason: z.literal("IITC_VIEWPORT_CACHE"),
+});
+
+// entities.export_geojson (RFC 7946)
+const GeoJsonPositionSchema = z.tuple([LngSchema, LatSchema]);
+
+const GeoJsonGeometrySchema = z.union([
+  z.object({
+    type: z.literal("Point"),
+    coordinates: GeoJsonPositionSchema,
+  }),
+  z.object({
+    type: z.literal("LineString"),
+    coordinates: z.tuple([GeoJsonPositionSchema, GeoJsonPositionSchema]),
+  }),
+  z.object({
+    type: z.literal("Polygon"),
+    coordinates: z.array(z.array(GeoJsonPositionSchema).min(4)).min(1),
+  }),
+]);
+
+export const GeoJsonFeatureSchema = z.object({
+  type: z.literal("Feature"),
+  id: z.string().min(1),
+  geometry: GeoJsonGeometrySchema,
+  properties: z.record(z.string(), z.unknown()),
+});
+
+export const ExportGeoJsonInputSchema = z.object({
+  scope: z.literal("viewport").default("viewport"),
+  team: TeamSchema.optional(),
+  includeLinks: z.boolean().default(false),
+  includeFields: z.boolean().default(false),
+});
+
+export const ExportGeoJsonOutputSchema = z.object({
+  type: z.literal("FeatureCollection"),
+  features: z.array(GeoJsonFeatureSchema),
+  metadata: z.object({
+    bounds: BoundsSchema,
+    portalCount: z.number().int().nonnegative(),
+    linkCount: z.number().int().nonnegative(),
+    fieldCount: z.number().int().nonnegative(),
+    complete: z.literal(false),
+    reason: z.literal("IITC_VIEWPORT_CACHE"),
+  }),
+});
+
 // portal.get_details
 export const GetPortalDetailsInputSchema = z.object({
   guid: GuidSchema,

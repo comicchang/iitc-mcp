@@ -23,7 +23,7 @@ CLI 入口：
 npx github:comicchang/iitc-mcp serve
 ```
 
-加 `--read-only` 启动只读模式（14 个工具，不注册 `iitc_send_comm` 和 `iitc_redeem_code`）：
+加 `--read-only` 启动只读模式（16 个工具，不注册 `iitc_send_comm` 和 `iitc_redeem_code`，并在 broker 层硬拒绝）：
 
 ```bash
 npx github:comicchang/iitc-mcp serve --read-only
@@ -64,7 +64,7 @@ args = ["github:comicchang/iitc-mcp", "serve"]
 
 </details>
 
-重载 MCP 配置即可使用，默认 16 个工具（`--read-only` 则为 14 个）。
+重载 MCP 配置即可使用，默认 18 个工具（`--read-only` 则为 16 个）。
 
 打开 [https://intel.ingress.com](https://intel.ingress.com)，Userscript + MCP Server 都就绪后，IITC Toolbox 里 `MCP` 状态灯变绿即连接成功。
 
@@ -91,11 +91,11 @@ graph LR
 ```
 
 ```bash
-iitc-mcp broker                          # 启动独立 broker
-iitc-mcp serve --broker-url http://127.0.0.1:27342   # 连接共享 broker
+iitc-mcp broker --read-only                          # 启动独立只读 broker（/mcp/* 默认启用 Bearer token 鉴权，提供 /healthz）
+iitc-mcp serve --broker-url http://127.0.0.1:27342   # 连接共享 broker（自动携带 token）
 ```
 
-一个浏览器页面可服务多个 AI agent。命令按 ID 排队——同时操作会互相干扰地图状态，实践中只有一个 agent在操作。
+一个浏览器页面可服务多个 AI agent。Broker 对改变视口/选中状态的命令（`map.set_view`、`map.fit_bounds`、`map.search_region`、`portal.select`）执行 FIFO 串行化互斥，避免多 agent 并发争抢视口。
 
 
 ### 包结构
@@ -123,6 +123,8 @@ iitc-mcp serve --broker-url http://127.0.0.1:27342   # 连接共享 broker
 | `iitc_list_portals` | 只读 | 列出当前视口中的 Portal（分页，仅 IITC 缓存） |
 | `iitc_list_links` | 只读 | 列出当前视口中的 Link（分页，仅 IITC 缓存） |
 | `iitc_list_fields` | 只读 | 列出当前视口中的控制场（分页，仅 IITC 缓存） |
+| `iitc_get_region_summary` | 只读 | 汇总当前视口 Portal（按阵营 E/R/N/M、等级 0–8）、Link 与控制场数量 |
+| `iitc_export_geojson` | 只读 | 将当前视口实体导出为标准 RFC 7946 GeoJSON FeatureCollection |
 | `iitc_get_portal_details` | 只读 | 按 GUID 获取 Portal 详情：mod、共振器、所有者、历史、关联实体 |
 | `iitc_select_portal` | UI | 在地图上选择 Portal；显示侧边栏详情 |
 | `iitc_search` | 只读 | 通过 IITC 搜索功能搜索 Portal/地点 |
@@ -218,7 +220,7 @@ iitc-mcp serve --broker-url http://127.0.0.1:27342   # 连接共享 broker
 git clone https://github.com/comicchang/iitc-mcp.git
 cd iitc-mcp
 npm ci --legacy-peer-deps
-npm run build && npm test        # 163 tests, typecheck, 3 build artifacts
+npm run build && npm test        # 178 tests, typecheck, 3 build artifacts
 ```
 
 构建脚本使用 esbuild 产出三个制品：

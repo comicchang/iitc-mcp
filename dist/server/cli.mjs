@@ -6909,6 +6909,8 @@ var BRIDGE_METHODS = [
   "map.set_view",
   "map.fit_bounds",
   "entities.list_portals",
+  "entities.region_summary",
+  "entities.export_geojson",
   "map.search_region",
   "entities.list_links",
   "entities.list_fields",
@@ -6921,6 +6923,16 @@ var BRIDGE_METHODS = [
   "tracker.get_trail",
   "comm.send",
   "redeem.submit"
+];
+var DESTRUCTIVE_BRIDGE_METHODS = [
+  "comm.send",
+  "redeem.submit"
+];
+var MAP_MUTATING_METHODS = [
+  "map.set_view",
+  "map.fit_bounds",
+  "map.search_region",
+  "portal.select"
 ];
 var BRIDGE_EVENTS = [
   "bridge.ready",
@@ -21707,6 +21719,63 @@ var ListFieldsInputSchema = ListInputSchema;
 var ListFieldsOutputSchema = PagedResultSchema.extend({
   items: external_exports.array(FieldSummarySchema)
 });
+var RegionSummaryInputSchema = external_exports.object({
+  scope: external_exports.literal("viewport").default("viewport")
+});
+var RegionSummaryOutputSchema = external_exports.object({
+  bounds: BoundsSchema,
+  totalPortals: external_exports.number().int().nonnegative(),
+  byTeam: external_exports.object({
+    E: external_exports.number().int().nonnegative(),
+    R: external_exports.number().int().nonnegative(),
+    N: external_exports.number().int().nonnegative(),
+    M: external_exports.number().int().nonnegative()
+  }),
+  byLevel: external_exports.record(external_exports.string(), external_exports.number().int().nonnegative()),
+  linksCount: external_exports.number().int().nonnegative(),
+  fieldsCount: external_exports.number().int().nonnegative(),
+  complete: external_exports.literal(false),
+  reason: external_exports.literal("IITC_VIEWPORT_CACHE")
+});
+var GeoJsonPositionSchema = external_exports.tuple([LngSchema, LatSchema]);
+var GeoJsonGeometrySchema = external_exports.union([
+  external_exports.object({
+    type: external_exports.literal("Point"),
+    coordinates: GeoJsonPositionSchema
+  }),
+  external_exports.object({
+    type: external_exports.literal("LineString"),
+    coordinates: external_exports.tuple([GeoJsonPositionSchema, GeoJsonPositionSchema])
+  }),
+  external_exports.object({
+    type: external_exports.literal("Polygon"),
+    coordinates: external_exports.array(external_exports.array(GeoJsonPositionSchema).min(4)).min(1)
+  })
+]);
+var GeoJsonFeatureSchema = external_exports.object({
+  type: external_exports.literal("Feature"),
+  id: external_exports.string().min(1),
+  geometry: GeoJsonGeometrySchema,
+  properties: external_exports.record(external_exports.string(), external_exports.unknown())
+});
+var ExportGeoJsonInputSchema = external_exports.object({
+  scope: external_exports.literal("viewport").default("viewport"),
+  team: TeamSchema.optional(),
+  includeLinks: external_exports.boolean().default(false),
+  includeFields: external_exports.boolean().default(false)
+});
+var ExportGeoJsonOutputSchema = external_exports.object({
+  type: external_exports.literal("FeatureCollection"),
+  features: external_exports.array(GeoJsonFeatureSchema),
+  metadata: external_exports.object({
+    bounds: BoundsSchema,
+    portalCount: external_exports.number().int().nonnegative(),
+    linkCount: external_exports.number().int().nonnegative(),
+    fieldCount: external_exports.number().int().nonnegative(),
+    complete: external_exports.literal(false),
+    reason: external_exports.literal("IITC_VIEWPORT_CACHE")
+  })
+});
 var GetPortalDetailsInputSchema = external_exports.object({
   guid: GuidSchema
 });
@@ -21751,21 +21820,31 @@ var RedeemSubmitOutputSchema = RedeemResultSchema;
 
 // packages/mcp-server/src/bridge/broker.ts
 import { randomBytes } from "node:crypto";
+var DESTRUCTIVE_SET = new Set(DESTRUCTIVE_BRIDGE_METHODS);
+var MAP_MUTATING_SET = new Set(MAP_MUTATING_METHODS);
 var LEASE_MS = 45e3;
 var MAX_EVENTS = 1e3;
 var POLL_WAIT_MS = 25e3;
 var BridgeBroker = class {
   session = null;
   leaseMs;
+  readOnly;
   commandSeq = 0;
   pendingCommands = /* @__PURE__ */ new Map();
   eventRing = [];
   maxEvents;
   pollWaiter = null;
+  mutatingInFlight = false;
+  mutatingWaiters = [];
   readyBeforeBridgeReady = false;
   constructor(opts) {
     this.leaseMs = opts?.leaseMs ?? LEASE_MS;
     this.maxEvents = opts?.maxEvents ?? MAX_EVENTS;
+    this.readOnly = opts?.readOnly ?? false;
+  }
+  /** 是否处于只读模式 */
+  isReadOnly() {
+    return this.readOnly;
   }
   /** 处理 connect 请求 */
   handleConnect(req) {
@@ -21844,6 +21923,13 @@ var BridgeBroker = class {
     this.pollWaiter = { resolve: callback, timer };
     return timer;
   }
+  /** 客户端提前断开时取消匹配的 long-poll 等待器，避免悬空定时器与写入已关闭响应 */
+  cancelLongPoll(callback) {
+    if (this.pollWaiter && this.pollWaiter.resolve === callback) {
+      clearTimeout(this.pollWaiter.timer);
+      this.pollWaiter = null;
+    }
+  }
   /** 处理 events 请求 */
   handleEvents(req) {
     const parsed = EventsRequestSchema.safeParse(req);
@@ -21864,11 +21950,75 @@ var BridgeBroker = class {
   }
   /** 入队命令，等待完成 (BridgeClient.call) */
   call(method, params, opts) {
+    if (this.readOnly && DESTRUCTIVE_SET.has(method)) {
+      return Promise.reject(
+        this.makeError("UNSUPPORTED", `Method ${method} is disabled in read-only mode`)
+      );
+    }
     if (!this.session) {
       return Promise.reject(this.makeError("NOT_READY", "No active session"));
     }
     if (!this.readyBeforeBridgeReady && !this.canCallBeforeReady(method)) {
       return Promise.reject(this.makeError("NOT_READY", "Page adapter not ready (waiting for bridge.ready)"));
+    }
+    if (MAP_MUTATING_SET.has(method)) {
+      return this.callSerialized(method, params, opts);
+    }
+    return this.enqueueCall(method, params, opts);
+  }
+  callSerialized(method, params, opts) {
+    if (!this.mutatingInFlight) {
+      this.mutatingInFlight = true;
+      return this.enqueueCall(method, params, opts).finally(() => {
+        this.releaseMutatingSlot();
+      });
+    }
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const onAbort = () => {
+        if (settled) return;
+        settled = true;
+        const idx = this.mutatingWaiters.indexOf(run);
+        if (idx !== -1) this.mutatingWaiters.splice(idx, 1);
+        reject(this.makeError("CANCELLED", "Command cancelled by client"));
+      };
+      const run = () => {
+        if (settled) {
+          this.releaseMutatingSlot();
+          return;
+        }
+        settled = true;
+        opts?.signal?.removeEventListener("abort", onAbort);
+        if (!this.session) {
+          this.releaseMutatingSlot();
+          reject(this.makeError("NOT_READY", "No active session"));
+          return;
+        }
+        this.enqueueCall(method, params, opts).then(resolve, reject).finally(() => {
+          this.releaseMutatingSlot();
+        });
+      };
+      if (opts?.signal) {
+        if (opts.signal.aborted) {
+          onAbort();
+          return;
+        }
+        opts.signal.addEventListener("abort", onAbort, { once: true });
+      }
+      this.mutatingWaiters.push(run);
+    });
+  }
+  releaseMutatingSlot() {
+    const next = this.mutatingWaiters.shift();
+    if (next) {
+      next();
+    } else {
+      this.mutatingInFlight = false;
+    }
+  }
+  enqueueCall(method, params, opts) {
+    if (!this.session) {
+      return Promise.reject(this.makeError("NOT_READY", "No active session"));
     }
     const timeoutMs = opts?.timeoutMs ?? 3e4;
     const id = String(++this.commandSeq);
@@ -21936,6 +22086,11 @@ var BridgeBroker = class {
     this.failAllPending("NOT_READY", "Session destroyed");
     this.session = null;
     this.clearPollWaiter();
+    const waiters = this.mutatingWaiters.splice(0);
+    this.mutatingInFlight = false;
+    for (const run of waiters) {
+      run();
+    }
   }
   /** 撤销 session（token rotate 用） */
   revokeSession() {
@@ -22035,8 +22190,17 @@ var BridgeBroker = class {
 // packages/mcp-server/src/bridge/remote-client.ts
 var RemoteBridgeClient = class {
   baseUrl;
+  token;
   constructor(opts) {
     this.baseUrl = opts.brokerUrl.replace(/\/$/, "");
+    this.token = opts.token;
+  }
+  buildHeaders(extra) {
+    const headers = { ...extra };
+    if (this.token) {
+      headers.Authorization = `Bearer ${this.token}`;
+    }
+    return headers;
   }
   async call(method, params, opts) {
     const timeoutMs = opts?.timeoutMs ?? 3e4;
@@ -22050,10 +22214,22 @@ var RemoteBridgeClient = class {
     try {
       const resp = await fetch(`${this.baseUrl}/mcp/call`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: this.buildHeaders({ "Content-Type": "application/json" }),
         body: JSON.stringify({ method, params, timeoutMs }),
         signal: controller.signal
       });
+      if (!resp.ok) {
+        let errBody;
+        try {
+          errBody = await resp.json();
+        } catch {
+        }
+        throw errBody?.error ?? {
+          code: resp.status === 401 ? "UNAUTHORIZED" : "UPSTREAM_ERROR",
+          message: `Broker HTTP ${resp.status}`,
+          retryable: resp.status >= 500
+        };
+      }
       const body = await resp.json();
       if (!body.ok)
         throw body.error ?? {
@@ -22067,11 +22243,29 @@ var RemoteBridgeClient = class {
     }
   }
   async getConnectionStatus() {
-    const resp = await fetch(`${this.baseUrl}/mcp/status`);
+    const resp = await fetch(`${this.baseUrl}/mcp/status`, {
+      headers: this.buildHeaders()
+    });
+    if (!resp.ok) {
+      throw {
+        code: resp.status === 401 ? "UNAUTHORIZED" : "UPSTREAM_ERROR",
+        message: `Broker HTTP ${resp.status}`,
+        retryable: resp.status >= 500
+      };
+    }
     return resp.json();
   }
   async getRecentEvents(count = 100) {
-    const resp = await fetch(`${this.baseUrl}/mcp/events?count=${count}`);
+    const resp = await fetch(`${this.baseUrl}/mcp/events?count=${count}`, {
+      headers: this.buildHeaders()
+    });
+    if (!resp.ok) {
+      throw {
+        code: resp.status === 401 ? "UNAUTHORIZED" : "UPSTREAM_ERROR",
+        message: `Broker HTTP ${resp.status}`,
+        retryable: resp.status >= 500
+      };
+    }
     const body = await resp.json();
     return body.events;
   }
@@ -22079,8 +22273,23 @@ var RemoteBridgeClient = class {
 
 // packages/mcp-server/src/bridge/http-server.ts
 import { createServer } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 var MAX_BODY_BYTES = 1048576;
 var DEFAULT_PORT = 27342;
+function constantTimeTokenEquals(expected, provided) {
+  const a = Buffer.from(expected, "utf-8");
+  const b = Buffer.from(provided, "utf-8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+function isAuthorized(req, expectedToken) {
+  if (!expectedToken) return true;
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith("Bearer ")) return false;
+  const provided = header.slice("Bearer ".length).trim();
+  if (!provided) return false;
+  return constantTimeTokenEquals(expectedToken, provided);
+}
 function readBody(req) {
   const { promise: promise2, resolve, reject } = Promise.withResolvers();
   const chunks = [];
@@ -22142,6 +22351,10 @@ async function parseBody(req, res) {
 }
 function startServer(broker, opts) {
   const requestedPort = opts?.port ?? DEFAULT_PORT;
+  const resolveExpectedToken = () => {
+    if (opts?.getAuthToken) return opts.getAuthToken();
+    return opts?.authToken ?? "";
+  };
   let actualPort = requestedPort;
   const server = createServer(async (req, res) => {
     const method = req.method ?? "GET";
@@ -22151,6 +22364,21 @@ function startServer(broker, opts) {
     if (!host || !isLoopbackHost(host, actualPort)) {
       errorJson(res, 400, "INVALID_ARGUMENT", "Host must be loopback");
       return;
+    }
+    if (reqPath === "/healthz" && method === "GET") {
+      json2(res, 200, {
+        ok: true,
+        connected: broker.hasSession(),
+        readOnly: broker.isReadOnly()
+      });
+      return;
+    }
+    if (reqPath.startsWith("/mcp/")) {
+      const expectedToken = resolveExpectedToken();
+      if (expectedToken && !isAuthorized(req, expectedToken)) {
+        errorJson(res, 401, "UNAUTHORIZED", "Missing or invalid Bearer token");
+        return;
+      }
     }
     if (reqPath === "/mcp/status" && method === "GET") {
       const status = await broker.getConnectionStatus();
@@ -22194,9 +22422,16 @@ function startServer(broker, opts) {
       const result = broker.handlePoll(body);
       if (result.longPoll) {
         res.setHeader("Cache-Control", "no-store");
-        broker.setupLongPoll((commands) => {
+        const onCommands = (commands) => {
+          if (res.writableEnded || res.destroyed) return;
           json2(res, 200, { commands });
+        };
+        req.on("close", () => {
+          if (!res.writableEnded) {
+            broker.cancelLongPoll(onCommands);
+          }
         });
+        broker.setupLongPoll(onCommands);
         return;
       }
       json2(res, result.status, result.body);
@@ -31799,6 +32034,8 @@ var M = {
   listPortals: "entities.list_portals",
   listLinks: "entities.list_links",
   listFields: "entities.list_fields",
+  regionSummary: "entities.region_summary",
+  exportGeoJson: "entities.export_geojson",
   getDetails: "portal.get_details",
   select: "portal.select",
   search: "search.query",
@@ -31844,11 +32081,13 @@ function normalizeBridgeError(err) {
 var MCPServerBridge = class {
   mcpServer;
   bridgeClient;
+  readOnly;
   constructor(opts) {
     this.bridgeClient = opts.bridgeClient;
+    this.readOnly = opts.readOnly ?? false;
     this.mcpServer = new McpServer({
       name: "iitc-mcp",
-      version: "0.1.0"
+      version: "1.2.0"
     });
     this.registerTools();
     this.registerResources();
@@ -31857,273 +32096,362 @@ var MCPServerBridge = class {
   registerTools() {
     const call = this.bridgeClient.call.bind(this.bridgeClient);
     const TIMEOUT = 3e4;
-    this.mcpServer.registerTool(
-      "iitc_get_map_state",
-      {
-        description: "Get the current map state: center, zoom, bounds, selected portal, and data status.",
-        outputSchema: MapStateSchema
-      },
-      async (extra) => {
-        try {
-          const result = await call(M.getState, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    const reg = (readOnly, fn) => {
+      if (!this.readOnly || readOnly) fn();
+    };
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_get_map_state",
+        {
+          description: "Get the current map state: center, zoom, bounds, selected portal, and data status.",
+          outputSchema: MapStateSchema
+        },
+        async (extra) => {
+          try {
+            const result = await call(M.getState, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_list_portals",
-      {
-        description: "List portals currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-        inputSchema: ListPortalsInputSchema,
-        outputSchema: ListPortalsOutputSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.listPortals, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_list_portals",
+        {
+          description: "List portals currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+          inputSchema: ListPortalsInputSchema,
+          outputSchema: ListPortalsOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.listPortals, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_list_links",
-      {
-        description: "List links currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-        inputSchema: ListLinksInputSchema,
-        outputSchema: ListLinksOutputSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.listLinks, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_list_links",
+        {
+          description: "List links currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+          inputSchema: ListLinksInputSchema,
+          outputSchema: ListLinksOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.listLinks, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_list_fields",
-      {
-        description: "List fields (control fields) currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-        inputSchema: ListFieldsInputSchema,
-        outputSchema: ListFieldsOutputSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.listFields, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_list_fields",
+        {
+          description: "List fields (control fields) currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+          inputSchema: ListFieldsInputSchema,
+          outputSchema: ListFieldsOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.listFields, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_get_portal_details",
-      {
-        description: "Get detailed information about a specific portal by its GUID, including mods, resonators, owner, and history.",
-        inputSchema: GetPortalDetailsInputSchema,
-        outputSchema: GetPortalDetailsOutputSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.getDetails, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_get_region_summary",
+        {
+          description: "Summarize entities visible in the current IITC viewport: total portals, counts by faction (E/R/N/M) and level (0-8), links count, fields count, and bounds.",
+          inputSchema: RegionSummaryInputSchema,
+          outputSchema: RegionSummaryOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.regionSummary, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_search",
-      {
-        description: "Search for portals and locations using the IITC search provider. Waits for results with a quiet-window heuristic.",
-        inputSchema: SearchQueryInputSchema,
-        outputSchema: SearchQueryOutputSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.search, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_export_geojson",
+        {
+          description: "Export entities visible in the current IITC viewport as a standard RFC 7946 GeoJSON FeatureCollection (portals as Points, optionally links as LineStrings and fields as Polygons).",
+          inputSchema: ExportGeoJsonInputSchema,
+          outputSchema: ExportGeoJsonOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.exportGeoJson, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_list_comm",
-      {
-        description: "List COMM (communication) messages from a channel. Optionally refreshes from Intel before reading.",
-        inputSchema: CommListInputSchema,
-        outputSchema: CommListOutputSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.commList, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_get_portal_details",
+        {
+          description: "Get detailed information about a specific portal by its GUID, including mods, resonators, owner, and history.",
+          inputSchema: GetPortalDetailsInputSchema,
+          outputSchema: GetPortalDetailsOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.getDetails, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_set_map_view",
-      {
-        description: "Set the map view to a specific lat/lng and optional zoom level. Returns the resulting map state after the move completes.",
-        inputSchema: SetViewInputSchema,
-        outputSchema: MapStateSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.setView, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_search",
+        {
+          description: "Search for portals and locations using the IITC search provider. Waits for results with a quiet-window heuristic.",
+          inputSchema: SearchQueryInputSchema,
+          outputSchema: SearchQueryOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.search, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_fit_map_bounds",
-      {
-        description: "Fit the map view to the given bounding box. Returns the resulting map state after the move completes.",
-        inputSchema: FitBoundsInputSchema,
-        outputSchema: MapStateSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.fitBounds, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_list_comm",
+        {
+          description: "List COMM (communication) messages from a channel. Optionally refreshes from Intel before reading.",
+          inputSchema: CommListInputSchema,
+          outputSchema: CommListOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.commList, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_search_region",
-      {
-        description: "Search for a named region (e.g. '\u9752\u679C\u5DF7\u793E\u533A') via Nominatim geocoding, fit the map to its bounds, and wait for map data to finish loading. Returns the resulting map state. Follow with iitc_list_portals to count portals in the region.",
-        inputSchema: SearchRegionInputSchema,
-        outputSchema: SearchRegionOutputSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.searchRegion, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_set_map_view",
+        {
+          description: "Set the map view to a specific lat/lng and optional zoom level. Returns the resulting map state after the move completes.",
+          inputSchema: SetViewInputSchema,
+          outputSchema: MapStateSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.setView, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_select_portal",
-      {
-        description: "Select a portal on the map by its GUID. Shows the portal in the sidebar and waits for the selection event.",
-        inputSchema: SelectPortalInputSchema,
-        outputSchema: SelectPortalOutputSchema,
-        annotations: {
-          readOnlyHint: false
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_fit_map_bounds",
+        {
+          description: "Fit the map view to the given bounding box. Returns the resulting map state after the move completes.",
+          inputSchema: FitBoundsInputSchema,
+          outputSchema: MapStateSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.fitBounds, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.select, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
-        }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_send_comm",
-      {
-        description: "Send a message to an Ingress COMM channel (all or faction). This sends a real message visible to other players.",
-        inputSchema: CommSendInputSchema,
-        outputSchema: CommSendOutputSchema,
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: true,
-          idempotentHint: false
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_search_region",
+        {
+          description: "Search for a named region (e.g. '\u9752\u679C\u5DF7\u793E\u533A') via Nominatim geocoding, fit the map to its bounds, and wait for map data to finish loading. Returns the resulting map state. Follow with iitc_list_portals to count portals in the region.",
+          inputSchema: SearchRegionInputSchema,
+          outputSchema: SearchRegionOutputSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.searchRegion, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.commSend, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
-        }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_redeem_code",
-      {
-        description: "Submit an Ingress passcode for redemption. This is a one-time operation that awards items, AP, or XM.",
-        inputSchema: RedeemSubmitInputSchema,
-        outputSchema: RedeemSubmitOutputSchema,
-        annotations: {
-          readOnlyHint: false,
-          destructiveHint: true,
-          idempotentHint: false
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_select_portal",
+        {
+          description: "Select a portal on the map by its GUID. Shows the portal in the sidebar and waits for the selection event.",
+          inputSchema: SelectPortalInputSchema,
+          outputSchema: SelectPortalOutputSchema,
+          annotations: {
+            readOnlyHint: false
+          }
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.select, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.redeem, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
-        }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_get_self",
-      {
-        description: "Return the signed-in player's own information: nickname, team, level, AP, and current XM.",
-        inputSchema: external_exports.object({}),
-        outputSchema: SelfInfoSchema
-      },
-      async (_args, extra) => {
-        try {
-          const result = await call(M.getSelf, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      false,
+      () => this.mcpServer.registerTool(
+        "iitc_send_comm",
+        {
+          description: "Send a message to an Ingress COMM channel (all or faction). This sends a real message visible to other players.",
+          inputSchema: CommSendInputSchema,
+          outputSchema: CommSendOutputSchema,
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: false
+          }
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.commSend, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_list_players",
-      {
-        description: "List players tracked by the Player Tracker plugin with their last known position, team, and action.",
-        inputSchema: external_exports.object({}),
-        outputSchema: external_exports.array(PlayerSummarySchema)
-      },
-      async (_args, extra) => {
-        try {
-          const result = await call(M.listPlayers, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      false,
+      () => this.mcpServer.registerTool(
+        "iitc_redeem_code",
+        {
+          description: "Submit an Ingress passcode for redemption. This is a one-time operation that awards items, AP, or XM.",
+          inputSchema: RedeemSubmitInputSchema,
+          outputSchema: RedeemSubmitOutputSchema,
+          annotations: {
+            readOnlyHint: false,
+            destructiveHint: true,
+            idempotentHint: false
+          }
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.redeem, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
     );
-    this.mcpServer.registerTool(
-      "iitc_get_player_trail",
-      {
-        description: "Return the trail (time-ordered events with lat/lng/action) for a specific tracked player by name.",
-        inputSchema: external_exports.object({ name: external_exports.string().min(1) }),
-        outputSchema: PlayerTrailSchema
-      },
-      async (args, extra) => {
-        try {
-          const result = await call(M.getTrail, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-          return toolSuccess(result);
-        } catch (err) {
-          return toolError(normalizeBridgeError(err));
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_get_self",
+        {
+          description: "Return the signed-in player's own information: nickname, team, level, AP, and current XM.",
+          inputSchema: external_exports.object({}),
+          outputSchema: SelfInfoSchema
+        },
+        async (_args, extra) => {
+          try {
+            const result = await call(M.getSelf, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
         }
-      }
+      )
+    );
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_list_players",
+        {
+          description: "List players tracked by the Player Tracker plugin with their last known position, team, and action.",
+          inputSchema: external_exports.object({}),
+          outputSchema: external_exports.array(PlayerSummarySchema)
+        },
+        async (_args, extra) => {
+          try {
+            const result = await call(M.listPlayers, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
+        }
+      )
+    );
+    reg(
+      true,
+      () => this.mcpServer.registerTool(
+        "iitc_get_player_trail",
+        {
+          description: "Return the trail (time-ordered events with lat/lng/action) for a specific tracked player by name.",
+          inputSchema: external_exports.object({ name: external_exports.string().min(1) }),
+          outputSchema: PlayerTrailSchema
+        },
+        async (args, extra) => {
+          try {
+            const result = await call(M.getTrail, args, { signal: extra.signal, timeoutMs: TIMEOUT });
+            return toolSuccess(result);
+          } catch (err) {
+            return toolError(normalizeBridgeError(err));
+          }
+        }
+      )
     );
   }
   // ── Resource Registration ───────────────────────────────────
@@ -32341,12 +32669,27 @@ async function brokerCmd(args) {
   const portIdx = args.indexOf("--port");
   if (portIdx !== -1 && args[portIdx + 1]) {
     port = parseInt(args[portIdx + 1], 10);
+    if (isNaN(port) || port < 1 || port > 65535) {
+      console.error("Error: --port must be 1-65535");
+      process.exit(1);
+    }
   }
-  const broker = new BridgeBroker();
-  const httpServer = await startServer(broker, { port });
+  const readOnly = args.includes("--read-only");
+  const noAuth = args.includes("--no-auth");
   const tokenInfo = getOrCreateToken();
-  console.error(`Bridge broker listening on http://127.0.0.1:${httpServer.port}`);
-  console.error(`Token: ${tokenInfo.token}`);
+  const broker = new BridgeBroker({ readOnly });
+  const httpServer = await startServer(broker, {
+    port,
+    getAuthToken: noAuth ? void 0 : () => getToken().token
+  });
+  console.error(
+    `Bridge broker listening on http://127.0.0.1:${httpServer.port}${readOnly ? " (read-only mode)" : ""}`
+  );
+  if (noAuth) {
+    console.error("Warning: /mcp/* Bearer authentication disabled (--no-auth)");
+  } else {
+    console.error(`Token: ${tokenInfo.token}`);
+  }
   const shutdown = async () => {
     console.error("Shutting down broker...");
     broker.revokeSession();
@@ -32368,21 +32711,31 @@ async function serve(args) {
       process.exit(1);
     }
   }
+  const readOnly = args.includes("--read-only");
+  const noAuth = args.includes("--no-auth");
+  const tokenInfo = getOrCreateToken();
   let bridgeClient;
   let httpServer;
   if (brokerUrl) {
-    bridgeClient = new RemoteBridgeClient({ brokerUrl });
+    bridgeClient = new RemoteBridgeClient({
+      brokerUrl,
+      token: noAuth ? void 0 : tokenInfo.token
+    });
     console.error(`Connecting to remote broker: ${brokerUrl}`);
   } else {
-    const broker = new BridgeBroker();
-    httpServer = await startServer(broker, { port });
+    const broker = new BridgeBroker({ readOnly });
+    httpServer = await startServer(broker, {
+      port,
+      getAuthToken: noAuth ? void 0 : () => getToken().token
+    });
     bridgeClient = broker;
     console.error(`Bridge origin: http://127.0.0.1:${httpServer.port}`);
   }
-  const tokenInfo = getOrCreateToken();
-  console.error(`Token: ${tokenInfo.token}`);
-  console.error(`iitc-mcp server ready`);
-  const mcpBridge = new MCPServerBridge({ bridgeClient });
+  if (!noAuth) {
+    console.error(`Token: ${tokenInfo.token}`);
+  }
+  console.error(`iitc-mcp server ready${readOnly ? " (read-only mode)" : ""}`);
+  const mcpBridge = new MCPServerBridge({ bridgeClient, readOnly });
   await mcpBridge.connect();
   let shuttingDown = false;
   const shutdown = async () => {
@@ -32416,10 +32769,10 @@ function printUsage() {
   console.error("Usage: iitc-mcp <command> [options]");
   console.error("");
   console.error("Commands:");
-  console.error("  broker [--port <port>]                           Start standalone broker daemon");
-  console.error("  serve [--bridge-port <port>] [--broker-url URL]  Start MCP server");
-  console.error("  token show                                       Show current bridge token");
-  console.error("  token rotate                                     Rotate bridge token");
+  console.error("  broker [--port <port>] [--read-only] [--no-auth]               Start standalone broker daemon");
+  console.error("  serve [--bridge-port <port>] [--broker-url URL] [--read-only] [--no-auth]  Start MCP server");
+  console.error("  token show                                                     Show current bridge token");
+  console.error("  token rotate                                                   Rotate bridge token");
 }
 main().catch((err) => {
   console.error("Fatal:", err instanceof Error ? err.message : err);

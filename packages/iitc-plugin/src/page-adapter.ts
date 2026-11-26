@@ -16,6 +16,10 @@ import type {
   CommMessage,
   RedeemResult,
   ListInput,
+  RegionSummaryOutput,
+  ExportGeoJsonInput,
+  ExportGeoJsonOutput,
+  GeoJsonFeature,
 } from "@iitc-mcp/protocol";
 
 // ─── IITC 全局类型声明 ─────────────────────────────────
@@ -168,6 +172,8 @@ export class PageAdapter {
       case "entities.list_portals": return this.listPortals(w, command.params as ListInput);
       case "entities.list_links": return this.listLinks(w, command.params as ListInput);
       case "entities.list_fields": return this.listFields(w, command.params as ListInput);
+      case "entities.region_summary": return this.getRegionSummary(w);
+      case "entities.export_geojson": return this.exportGeoJson(w, (command.params ?? {}) as Partial<ExportGeoJsonInput>);
       case "portal.get_details": return this.getPortalDetails(w, command.params as { guid: string });
       case "portal.select": return this.selectPortal(w, command.params as { guid: string });
       case "search.query": return this.searchQuery(w, command.params as { term: string });
@@ -266,7 +272,7 @@ export class PageAdapter {
     const regionName = data[0].display_name?.split(",")[0]?.trim();
 
     const map = w.map;
-    const moveResult = await this.waitForMoveEnd(w, () => {
+    await this.waitForMoveEnd(w, () => {
       map.fitBounds([[south, west], [north, east]]);
     }).catch((err: unknown) => {
       if (isBridgeError(err) && err.code === "TIMEOUT") {
@@ -462,6 +468,183 @@ export class PageAdapter {
     }
     items.sort((a, b) => a.guid.localeCompare(b.guid));
     return this.paginate(items, input);
+  }
+
+  // ─── entities.region_summary ───────────────────────────
+
+  private getRegionSummary(w: WindowWithIITC): RegionSummaryOutput {
+    const mapBounds = w.map.getBounds();
+    const byTeam = { E: 0, R: 0, N: 0, M: 0 };
+    const byLevel: Record<string, number> = {};
+    let totalPortals = 0;
+
+    for (const p of Object.values(w.portals)) {
+      const ll = p.getLatLng();
+      if (!this.inBounds(w, ll.lat, ll.lng)) continue;
+      totalPortals++;
+      const team = normalizeTeam(p.options.data.team);
+      byTeam[team]++;
+      const levelKey = String(typeof p.options.data.level === "number" ? p.options.data.level : 0);
+      byLevel[levelKey] = (byLevel[levelKey] ?? 0) + 1;
+    }
+
+    let linksCount = 0;
+    for (const l of Object.values(w.links)) {
+      const oLat = l.options.data.oLatE6 / 1e6;
+      const oLng = l.options.data.oLngE6 / 1e6;
+      const dLat = l.options.data.dLatE6 / 1e6;
+      const dLng = l.options.data.dLngE6 / 1e6;
+      if (this.inBounds(w, oLat, oLng) || this.inBounds(w, dLat, dLng)) {
+        linksCount++;
+      }
+    }
+
+    let fieldsCount = 0;
+    for (const f of Object.values(w.fields)) {
+      try {
+        if (!f.getBounds().intersects(mapBounds)) continue;
+      } catch {
+        // Include field if getBounds fails
+      }
+      fieldsCount++;
+    }
+
+    return {
+      bounds: {
+        south: mapBounds.getSouth(),
+        west: mapBounds.getWest(),
+        north: mapBounds.getNorth(),
+        east: mapBounds.getEast(),
+      },
+      totalPortals,
+      byTeam,
+      byLevel,
+      linksCount,
+      fieldsCount,
+      complete: false,
+      reason: "IITC_VIEWPORT_CACHE",
+    };
+  }
+
+  // ─── entities.export_geojson ───────────────────────────
+
+  private exportGeoJson(w: WindowWithIITC, input: Partial<ExportGeoJsonInput>): ExportGeoJsonOutput {
+    const mapBounds = w.map.getBounds();
+    const teamFilter = input.team;
+    const includeLinks = input.includeLinks === true;
+    const includeFields = input.includeFields === true;
+
+    const portalFeatures: GeoJsonFeature[] = [];
+    for (const p of Object.values(w.portals)) {
+      const ll = p.getLatLng();
+      const team = normalizeTeam(p.options.data.team);
+      if (teamFilter && team !== teamFilter) continue;
+      if (!this.inBounds(w, ll.lat, ll.lng)) continue;
+      const props: Record<string, unknown> = {
+        entityType: "portal",
+        guid: p.options.guid,
+        team,
+        detailLevel: p.options.data.title ? "summary" : "core",
+      };
+      if (p.options.data.level !== undefined) props.level = p.options.data.level;
+      if (p.options.data.health !== undefined) props.health = p.options.data.health;
+      if (p.options.data.resCount !== undefined) props.resCount = p.options.data.resCount;
+      if (p.options.data.title !== undefined) props.title = p.options.data.title;
+      if (p.options.data.image !== undefined) props.image = p.options.data.image;
+
+      portalFeatures.push({
+        type: "Feature",
+        id: p.options.guid,
+        geometry: {
+          type: "Point",
+          coordinates: [ll.lng, ll.lat],
+        },
+        properties: props,
+      });
+    }
+    portalFeatures.sort((a, b) => a.id.localeCompare(b.id));
+
+    const linkFeatures: GeoJsonFeature[] = [];
+    if (includeLinks) {
+      for (const l of Object.values(w.links)) {
+        const team = normalizeTeam(l.options.data.team);
+        if (teamFilter && team !== teamFilter) continue;
+        const oLat = l.options.data.oLatE6 / 1e6;
+        const oLng = l.options.data.oLngE6 / 1e6;
+        const dLat = l.options.data.dLatE6 / 1e6;
+        const dLng = l.options.data.dLngE6 / 1e6;
+        if (!this.inBounds(w, oLat, oLng) && !this.inBounds(w, dLat, dLng)) continue;
+        linkFeatures.push({
+          type: "Feature",
+          id: l.options.guid,
+          geometry: {
+            type: "LineString",
+            coordinates: [
+              [oLng, oLat],
+              [dLng, dLat],
+            ],
+          },
+          properties: {
+            entityType: "link",
+            guid: l.options.guid,
+            team,
+            originGuid: l.options.data.oGuid,
+            destinationGuid: l.options.data.dGuid,
+          },
+        });
+      }
+      linkFeatures.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    const fieldFeatures: GeoJsonFeature[] = [];
+    if (includeFields) {
+      for (const f of Object.values(w.fields)) {
+        const team = normalizeTeam(f.options.data.team);
+        if (teamFilter && team !== teamFilter) continue;
+        try {
+          if (!f.getBounds().intersects(mapBounds)) continue;
+        } catch {
+          // Include field if getBounds fails
+        }
+        const pts = f.options.data.points;
+        if (!pts || pts.length < 3) continue;
+        const ring: Array<[number, number]> = pts.map((pt) => [pt.lngE6 / 1e6, pt.latE6 / 1e6]);
+        ring.push(ring[0]);
+        fieldFeatures.push({
+          type: "Feature",
+          id: f.options.guid,
+          geometry: {
+            type: "Polygon",
+            coordinates: [ring],
+          },
+          properties: {
+            entityType: "field",
+            guid: f.options.guid,
+            team,
+            vertexGuids: pts.map((pt) => pt.guid),
+          },
+        });
+      }
+      fieldFeatures.sort((a, b) => a.id.localeCompare(b.id));
+    }
+
+    return {
+      type: "FeatureCollection",
+      features: [...portalFeatures, ...linkFeatures, ...fieldFeatures],
+      metadata: {
+        bounds: {
+          south: mapBounds.getSouth(),
+          west: mapBounds.getWest(),
+          north: mapBounds.getNorth(),
+          east: mapBounds.getEast(),
+        },
+        portalCount: portalFeatures.length,
+        linkCount: linkFeatures.length,
+        fieldCount: fieldFeatures.length,
+        complete: false,
+        reason: "IITC_VIEWPORT_CACHE",
+      },
+    };
   }
 
 

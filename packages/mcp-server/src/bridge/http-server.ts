@@ -1,18 +1,43 @@
 /**
  * Bridge HTTP Server — 监听 127.0.0.1:27342
- * 纯 Node http，无 express；只接受三个 POST path
- * 安全模型：仅依赖 loopback 绑定，无 token 认证
+ * 纯 Node http，无 express
+ * 安全模型：仅允许 loopback；/mcp/* 支持 Bearer token 认证（配置 authToken/getAuthToken 时强制校验）
  */
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import type { BridgeBroker } from "./broker.js";
 import type { BridgeMethod } from "@iitc-mcp/protocol";
 
 const MAX_BODY_BYTES = 1_048_576;
 const DEFAULT_PORT = 27342;
 
+export interface BridgeServerOptions {
+  port?: number;
+  /** 静态 Bearer token（用于保护 /mcp/* 端点） */
+  authToken?: string;
+  /** 动态读取当前 Bearer token（支持 token rotate 立即生效） */
+  getAuthToken?: () => string;
+}
+
 export interface BridgeServerHandle {
   port: number;
   close: () => Promise<void>;
+}
+
+function constantTimeTokenEquals(expected: string, provided: string): boolean {
+  const a = Buffer.from(expected, "utf-8");
+  const b = Buffer.from(provided, "utf-8");
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}
+
+function isAuthorized(req: IncomingMessage, expectedToken: string): boolean {
+  if (!expectedToken) return true;
+  const header = req.headers.authorization;
+  if (!header || !header.startsWith("Bearer ")) return false;
+  const provided = header.slice("Bearer ".length).trim();
+  if (!provided) return false;
+  return constantTimeTokenEquals(expectedToken, provided);
 }
 
 function readBody(req: IncomingMessage): Promise<Buffer> {
@@ -80,9 +105,13 @@ async function parseBody(req: IncomingMessage, res: ServerResponse): Promise<unk
 
 export function startServer(
   broker: BridgeBroker,
-  opts?: { port?: number },
+  opts?: BridgeServerOptions,
 ): Promise<BridgeServerHandle> {
   const requestedPort = opts?.port ?? DEFAULT_PORT;
+  const resolveExpectedToken = (): string => {
+    if (opts?.getAuthToken) return opts.getAuthToken();
+    return opts?.authToken ?? "";
+  };
 
   let actualPort = requestedPort;
 
@@ -96,6 +125,25 @@ export function startServer(
     if (!host || !isLoopbackHost(host, actualPort)) {
       errorJson(res, 400, "INVALID_ARGUMENT", "Host must be loopback");
       return;
+    }
+
+    // 轻量健康探针（不暴露敏感信息）
+    if (reqPath === "/healthz" && method === "GET") {
+      json(res, 200, {
+        ok: true,
+        connected: broker.hasSession(),
+        readOnly: broker.isReadOnly(),
+      });
+      return;
+    }
+
+    // MCP 控制面鉴权（配置 token 时强制校验 Bearer）
+    if (reqPath.startsWith("/mcp/")) {
+      const expectedToken = resolveExpectedToken();
+      if (expectedToken && !isAuthorized(req, expectedToken)) {
+        errorJson(res, 401, "UNAUTHORIZED", "Missing or invalid Bearer token");
+        return;
+      }
     }
 
     // MCP 控制面（GET + POST）
@@ -148,9 +196,16 @@ export function startServer(
       const result = broker.handlePoll(body);
       if (result.longPoll) {
         res.setHeader("Cache-Control", "no-store");
-        broker.setupLongPoll((commands) => {
+        const onCommands = (commands: unknown[]) => {
+          if (res.writableEnded || res.destroyed) return;
           json(res, 200, { commands });
+        };
+        req.on("close", () => {
+          if (!res.writableEnded) {
+            broker.cancelLongPoll(onCommands);
+          }
         });
+        broker.setupLongPoll(onCommands);
         return;
       }
       json(res, result.status, result.body);
