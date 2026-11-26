@@ -1,6 +1,6 @@
 {
   "name": "@iitc-mcp/mcp-server",
-  "version": "0.1.0",
+  "version": "1.2.0",
   "private": true,
   "type": "module",
   "bin": {

@@ -1,8 +1,12 @@
 node_modules/
 dist/
+coverage/
 test-results/
 *.tsbuildinfo
+*.tgz
 .DS_Store
 *.log
 .env
 .env.*
+.vscode/
+.idea/

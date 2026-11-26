@@ -9,13 +9,15 @@
  * - Completion cache: 防止 comm.send/redeem.submit 重放
  */
 
-import type {
-  BridgeCommand,
-  BridgeCompletion,
-  BridgeEvent,
-  BridgeError,
-  ConnectResponse,
-  PollResponse,
+import {
+  DEFAULT_PORT,
+  protocolVersion,
+  type BridgeCommand,
+  type BridgeCompletion,
+  type BridgeEvent,
+  type BridgeError,
+  type ConnectResponse,
+  type PollResponse,
 } from "@iitc-mcp/protocol";
 
 // ─── GM 类型声明 ──────────────────────────────────────────
@@ -74,6 +76,7 @@ const MAX_MISSED_HEARTBEATS = 3;
 const BACKOFF_DELAYS_S = [1, 2, 4, 8, 15];
 const MAX_JITTER_S = 1;
 const COMPLETION_CACHE_MAX = 256;
+const MAX_PENDING_EVENTS = 200;
 const EVENT_ITEM_MAX_BYTES = 512 * 1024; // 512 KiB
 
 const BRIDGE_CAPABILITIES = [
@@ -90,7 +93,7 @@ const BRIDGE_CAPABILITIES = [
 // ─── BridgeTransport ─────────────────────────────────────
 
 export class BridgeTransport {
-  private static readonly DEFAULT_ORIGIN = "http://127.0.0.1:27342";
+  private static readonly DEFAULT_ORIGIN = `http://127.0.0.1:${DEFAULT_PORT}`;
   private static readonly DEFAULT_PLUGIN_VERSION = "1.2.0";
 
   private origin: string;
@@ -201,7 +204,7 @@ export class BridgeTransport {
       : "unknown";
 
     const req = {
-      protocolVersion: 1,
+      protocolVersion,
       pluginVersion: this.pluginVersion,
       iitcVersion,
       tabId: this.generateId(),
@@ -301,7 +304,13 @@ export class BridgeTransport {
         console.warn("[iitc-mcp] Invalid event payload: missing type");
         return;
       }
+      if (!this.connected && d.type !== "bridge.ready") {
+        return;
+      }
       this.pendingEvents.push(d as BridgeEvent);
+      if (this.pendingEvents.length > MAX_PENDING_EVENTS) {
+        this.pendingEvents.splice(0, this.pendingEvents.length - MAX_PENDING_EVENTS);
+      }
     };
 
     const onStatusRequest = () => {
@@ -531,6 +540,9 @@ export class BridgeTransport {
     this.clearWatchdogTimer();
     this.cleanupPageListeners?.();
     this.cleanupPageListeners = null;
+    this.pendingEvents = [];
+    this.pendingCompletions = [];
+    this.completionCache.clear();
   }
 }
 

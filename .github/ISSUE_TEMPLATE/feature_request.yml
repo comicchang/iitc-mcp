@@ -1,0 +1,33 @@
+name: Feature Request
+description: Suggest a new MCP tool, resource, or improvement
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What workflow or question are you trying to solve with IITC and MCP?
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the tool, schema, CLI flag, or behavior you would like to see.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: category
+    attributes:
+      label: Operation safety level
+      description: Does this feature mutate local UI state or game/server state?
+      options:
+        - Read-only query (viewport cache / IITC state)
+        - Local UI navigation (map bounds / portal selection)
+        - External / game-state mutation (requires explicit approval & destructiveHint)
+        - Developer / CLI / packaging improvement
+    validations:
+      required: true

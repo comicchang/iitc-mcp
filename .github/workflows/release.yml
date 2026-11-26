@@ -20,6 +20,8 @@ jobs:
 
       - run: npm ci --legacy-peer-deps
 
+      - run: npm run lint
+
       - run: npm run build
 
       - run: npm test

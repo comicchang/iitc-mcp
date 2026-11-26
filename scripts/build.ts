@@ -30,7 +30,7 @@ function getReleaseBase(): string {
     }
   } catch { /* no remote */ }
   // fallback
-  return "https://github.com/your-org/iitc-mcp/releases/latest/download";
+  return "https://github.com/comicchang/iitc-mcp/releases/latest/download";
 }
 
 // ─── Userscript bundle ────────────────────────────────

@@ -15,9 +15,12 @@ import {
   ConnectRequestSchema,
   PollRequestSchema,
   EventsRequestSchema,
-  BridgeEventSchema,
   DESTRUCTIVE_BRIDGE_METHODS,
   MAP_MUTATING_METHODS,
+  LEASE_MS,
+  HEARTBEAT_MS,
+  MAX_BODY_BYTES,
+  POLL_TIMEOUT_MS,
 } from "@iitc-mcp/protocol";
 import { randomBytes } from "node:crypto";
 
@@ -42,6 +45,7 @@ export interface PendingCall {
   reject: (error: BridgeError) => void;
   timeout: NodeJS.Timeout;
   dispatched: boolean;
+  cleanupAbort?: () => void;
 }
 
 export interface BridgeBrokerOptions {
@@ -56,9 +60,7 @@ export interface BridgeClient {
   getRecentEvents(count?: number): Promise<BridgeEvent[]>;
 }
 
-const LEASE_MS = 45_000;
-const MAX_EVENTS = 1000;
-const POLL_WAIT_MS = 25_000;
+const DEFAULT_MAX_EVENTS = 100;
 
 export class BridgeBroker implements BridgeClient {
   private session: {
@@ -88,7 +90,7 @@ export class BridgeBroker implements BridgeClient {
 
   constructor(opts?: BridgeBrokerOptions) {
     this.leaseMs = opts?.leaseMs ?? LEASE_MS;
-    this.maxEvents = opts?.maxEvents ?? MAX_EVENTS;
+    this.maxEvents = opts?.maxEvents ?? DEFAULT_MAX_EVENTS;
     this.readOnly = opts?.readOnly ?? false;
   }
 
@@ -142,8 +144,8 @@ export class BridgeBroker implements BridgeClient {
     const response: ConnectResponse = {
       sessionId,
       leaseMs: this.leaseMs,
-      heartbeatMs: 15_000,
-      maxBodyBytes: 1_048_576,
+      heartbeatMs: HEARTBEAT_MS,
+      maxBodyBytes: MAX_BODY_BYTES,
     };
     return { status: 200, body: response };
   }
@@ -193,7 +195,7 @@ export class BridgeBroker implements BridgeClient {
     const timer = setTimeout(() => {
       this.pollWaiter = null;
       callback([]);
-    }, POLL_WAIT_MS);
+    }, POLL_TIMEOUT_MS);
     this.pollWaiter = { resolve: callback, timer };
     return timer;
   }
@@ -220,10 +222,7 @@ export class BridgeBroker implements BridgeClient {
     }
 
     for (const evt of events) {
-      const validEvt = BridgeEventSchema.safeParse(evt);
-      if (validEvt.success) {
-        this.pushEvent(validEvt.data);
-      }
+      this.pushEvent(evt);
     }
 
     return { status: 204, body: null };
@@ -236,6 +235,7 @@ export class BridgeBroker implements BridgeClient {
         this.makeError("UNSUPPORTED", `Method ${method} is disabled in read-only mode`),
       );
     }
+    this.pruneExpiredSession();
     if (!this.session) {
       return Promise.reject(this.makeError("NOT_READY", "No active session"));
     }
@@ -319,6 +319,10 @@ export class BridgeBroker implements BridgeClient {
       return Promise.reject(this.makeError("NOT_READY", "No active session"));
     }
 
+    if (opts?.signal?.aborted) {
+      return Promise.reject(this.makeError("CANCELLED", "Command cancelled by client"));
+    }
+
     const timeoutMs = opts?.timeoutMs ?? 30_000;
     const id = String(++this.commandSeq);
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
@@ -330,23 +334,29 @@ export class BridgeBroker implements BridgeClient {
       resolve,
       reject,
       timeout: setTimeout(() => {
+        const e = this.pendingCommands.get(id);
+        if (!e) return;
         this.pendingCommands.delete(id);
+        e.cleanupAbort?.();
         reject(this.makeError("TIMEOUT", `Command ${method} timed out after ${timeoutMs}ms`));
       }, timeoutMs),
       dispatched: false,
     };
-    this.pendingCommands.set(id, entry);
 
     if (opts?.signal) {
-      opts.signal.addEventListener("abort", () => {
+      const onAbort = (): void => {
         const e = this.pendingCommands.get(id);
         if (e) {
           clearTimeout(e.timeout);
           this.pendingCommands.delete(id);
           reject(this.makeError("CANCELLED", "Command cancelled by client"));
         }
-      }, { once: true });
+      };
+      opts.signal.addEventListener("abort", onAbort, { once: true });
+      entry.cleanupAbort = () => opts.signal?.removeEventListener("abort", onAbort);
     }
+
+    this.pendingCommands.set(id, entry);
 
     this.tryDispatch();
     return promise;
@@ -354,6 +364,7 @@ export class BridgeBroker implements BridgeClient {
 
   /** 获取连接状态 */
   async getConnectionStatus(): Promise<SessionStatus> {
+    this.pruneExpiredSession();
     if (!this.session) {
       return {
         connected: false,
@@ -390,6 +401,8 @@ export class BridgeBroker implements BridgeClient {
   destroySession(): void {
     this.failAllPending("NOT_READY", "Session destroyed");
     this.session = null;
+    this.eventRing = [];
+    this.readyBeforeBridgeReady = false;
     this.clearPollWaiter();
     const waiters = this.mutatingWaiters.splice(0);
     this.mutatingInFlight = false;
@@ -405,10 +418,17 @@ export class BridgeBroker implements BridgeClient {
 
   /** 是否有活跃 session */
   hasSession(): boolean {
+    this.pruneExpiredSession();
     return this.session !== null;
   }
 
   // ─── private ────────────────────────────────────────────
+
+  private pruneExpiredSession(): void {
+    if (this.session && Date.now() - this.session.lastPollAt > this.leaseMs) {
+      this.destroySession();
+    }
+  }
 
   private canCallBeforeReady(method: BridgeMethod): boolean {
     return method === "map.get_state";
@@ -446,6 +466,7 @@ export class BridgeBroker implements BridgeClient {
     if (!entry) return; // late or unknown
 
     clearTimeout(entry.timeout);
+    entry.cleanupAbort?.();
     this.pendingCommands.delete(comp.id);
 
     if (comp.ok) {
@@ -473,6 +494,7 @@ export class BridgeBroker implements BridgeClient {
     const err = this.makeError(code as BridgeError["code"], message);
     for (const [, entry] of this.pendingCommands) {
       clearTimeout(entry.timeout);
+      entry.cleanupAbort?.();
       entry.reject(err);
     }
     this.pendingCommands.clear();

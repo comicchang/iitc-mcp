@@ -283,10 +283,10 @@ describe("BridgeBroker", () => {
     expect(events[0].type).toBe("map.changed");
   });
 
-  it("event ring caps at 1000", async () => {
+  it("event ring caps at 100 by default", async () => {
     const { body } = connect();
     const sid = (body as { sessionId: string }).sessionId;
-    const events = Array.from({ length: 1005 }, (_, i) => ({
+    const events = Array.from({ length: 105 }, (_, i) => ({
       eventId: `e${i}`,
       sequence: i,
       occurredAt: new Date().toISOString(),
@@ -294,9 +294,41 @@ describe("BridgeBroker", () => {
       payload: {},
     }));
     broker.handleEvents({ sessionId: sid, events });
-    const recent = await broker.getRecentEvents(2000);
-    expect(recent).toHaveLength(1000);
+    const recent = await broker.getRecentEvents(200);
+    expect(recent).toHaveLength(100);
     expect(recent[0].eventId).toBe("e5");
+  });
+
+  it("destroySession clears eventRing", async () => {
+    const { body } = connect();
+    const sid = (body as { sessionId: string }).sessionId;
+    broker.handleEvents({
+      sessionId: sid,
+      events: [{
+        eventId: "e-clear",
+        sequence: 1,
+        occurredAt: new Date().toISOString(),
+        type: "map.changed",
+        payload: {},
+      }],
+    });
+    expect(await broker.getRecentEvents()).toHaveLength(1);
+    broker.destroySession();
+    expect(await broker.getRecentEvents()).toHaveLength(0);
+  });
+
+  it("prunes expired session in hasSession() and getConnectionStatus()", async () => {
+    broker = new BridgeBroker({ leaseMs: 1_000 });
+    connect();
+    expect(broker.hasSession()).toBe(true);
+
+    const session = (broker as unknown as { session: { lastPollAt: number } }).session;
+    session.lastPollAt = Date.now() - 2_000;
+
+    expect(broker.hasSession()).toBe(false);
+    const status = await broker.getConnectionStatus();
+    expect(status.connected).toBe(false);
+    expect(status.sessionId).toBeNull();
   });
 
   it("destroySession rejects all pending commands", async () => {
@@ -801,5 +833,54 @@ describe("HTTP /mcp/* Bearer authentication", () => {
     await expect(client.call("comm.send", { channel: "all", message: "test" })).rejects.toMatchObject({
       code: "UNSUPPORTED",
     });
+  });
+
+  it("rejects invalid /mcp/call method with 400 INVALID_ARGUMENT", async () => {
+    const res = await makeReq(
+      server.port,
+      activeToken,
+      "/mcp/call",
+      { method: "invalid.bogus_method", params: {} },
+      { Authorization: `Bearer ${activeToken}` },
+    );
+    expect(res.status).toBe(400);
+    const body = JSON.parse(res.body) as { error: { code: string } };
+    expect(body.error.code).toBe("INVALID_ARGUMENT");
+  });
+
+  it("cancels queued broker command when /mcp/call HTTP client disconnects", async () => {
+    const connectRes = broker.handleConnect({
+      protocolVersion: 1,
+      pluginVersion: "1.2.0",
+      iitcVersion: "0.40.0",
+      tabId: "abort-tab",
+      capabilities: ["map"],
+    });
+    const sid = (connectRes.body as { sessionId: string }).sessionId;
+    broker.markBridgeReady();
+
+    // Send /mcp/call and destroy socket before broker poll completes it
+    const req = httpRequest({
+      hostname: "127.0.0.1",
+      port: server.port,
+      path: "/mcp/call",
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${activeToken}`,
+      },
+    });
+    req.on("error", () => { /* expected ECONNRESET after destroy */ });
+    req.write(JSON.stringify({ method: "map.get_state", params: {} }));
+    req.end();
+
+    // Wait briefly for server to enqueue command, then abort client socket
+    await new Promise((r) => setTimeout(r, 30));
+    req.destroy();
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Poll should see 0 pending commands because disconnect aborted it
+    const poll = broker.handlePoll({ sessionId: sid, completed: [] });
+    expect(poll.longPoll).toBe(true);
   });
 });

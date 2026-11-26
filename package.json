@@ -1,6 +1,26 @@
 {
   "name": "iitc-mcp",
   "version": "1.2.0",
+  "description": "Bridge between IITC (Ingress Intel Total Conversion) and MCP (Model Context Protocol) AI agents",
+  "author": "comicchang",
+  "homepage": "https://github.com/comicchang/iitc-mcp#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/comicchang/iitc-mcp.git"
+  },
+  "bugs": {
+    "url": "https://github.com/comicchang/iitc-mcp/issues"
+  },
+  "keywords": [
+    "iitc",
+    "ingress",
+    "intel",
+    "mcp",
+    "model-context-protocol",
+    "userscript",
+    "tampermonkey",
+    "geojson"
+  ],
   "bin": {
     "iitc-mcp": "dist/server/cli.mjs"
   },
@@ -22,7 +42,6 @@
     "typecheck": "tsc -b",
     "build": "npm run typecheck && tsx scripts/build.ts",
     "test": "vitest run",
-    "test:modules": "playwright test",
     "test:smoke": "vitest run test/smoke",
     "lint": "eslint packages/ test/ scripts/"
   },

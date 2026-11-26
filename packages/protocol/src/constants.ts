@@ -1,6 +1,9 @@
 /** 协议版本号 */
 export const protocolVersion = 1;
 
+/** 默认本地桥接端口 */
+export const DEFAULT_PORT = 27342;
+
 /** Bridge lease 时长 */
 export const LEASE_MS = 45_000;
 

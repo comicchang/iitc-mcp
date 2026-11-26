@@ -817,4 +817,79 @@ describe("PageAdapter", () => {
       expect(fc.features[0].id).toBe("p-e");
     });
   });
+
+  // ─── viewport-entities normalization & single getBounds ─
+
+  describe("viewport-entities normalization & performance", () => {
+    it("normalizes full faction names before filtering in listPortals/listLinks/listFields", async () => {
+      fw.portals = {
+        "p-enl": makeFakePortal("p-enl", { team: "ENLIGHTENED" }),
+        "p-res": makeFakePortal("p-res", { team: "RESISTANCE" }),
+      };
+      fw.links = {
+        "l-enl": makeFakeLink("l-enl", { team: "ENLIGHTENED" }),
+        "l-res": makeFakeLink("l-res", { team: "RESISTANCE" }),
+      };
+      fw.fields = {
+        "f-enl": makeFakeField("f-enl", { team: "ENLIGHTENED" }),
+        "f-res": makeFakeField("f-res", { team: "RESISTANCE" }),
+      };
+
+      const portalsRes = await adapter.handleCommand(cmd("entities.list_portals", { scope: "viewport", team: "E" }));
+      expect(ok(portalsRes)).toBe(true);
+      if (!ok(portalsRes)) return;
+      expect((portalsRes.result as { items: PortalSummary[] }).items.map((p) => p.guid)).toEqual(["p-enl"]);
+
+      const linksRes = await adapter.handleCommand(cmd("entities.list_links", { scope: "viewport", team: "E" }));
+      expect(ok(linksRes)).toBe(true);
+      if (!ok(linksRes)) return;
+      expect((linksRes.result as { items: LinkSummary[] }).items.map((l) => l.guid)).toEqual(["l-enl"]);
+
+      const fieldsRes = await adapter.handleCommand(cmd("entities.list_fields", { scope: "viewport", team: "E" }));
+      expect(ok(fieldsRes)).toBe(true);
+      if (!ok(fieldsRes)) return;
+      expect((fieldsRes.result as { items: FieldSummary[] }).items.map((f) => f.guid)).toEqual(["f-enl"]);
+    });
+
+    it("hoists map.getBounds() to a single call per entity query", async () => {
+      const getBoundsSpy = vi.fn(() => makeBounds(51.49, -0.15, 51.52, -0.1));
+      fw.map.getBounds = getBoundsSpy;
+      fw.portals = {
+        "p-1": makeFakePortal("p-1"),
+        "p-2": makeFakePortal("p-2"),
+        "p-3": makeFakePortal("p-3"),
+      };
+      fw.links = {
+        "l-1": makeFakeLink("l-1"),
+        "l-2": makeFakeLink("l-2"),
+      };
+      fw.fields = {
+        "f-1": makeFakeField("f-1"),
+      };
+
+      await adapter.handleCommand(cmd("entities.list_portals", { scope: "viewport" }));
+      expect(getBoundsSpy).toHaveBeenCalledTimes(1);
+
+      getBoundsSpy.mockClear();
+      await adapter.handleCommand(cmd("entities.list_links", { scope: "viewport" }));
+      expect(getBoundsSpy).toHaveBeenCalledTimes(1);
+
+      getBoundsSpy.mockClear();
+      await adapter.handleCommand(cmd("entities.region_summary", { scope: "viewport" }));
+      expect(getBoundsSpy).toHaveBeenCalledTimes(1);
+
+      getBoundsSpy.mockClear();
+      await adapter.handleCommand(cmd("entities.export_geojson", { scope: "viewport", includeLinks: true, includeFields: true }));
+      expect(getBoundsSpy).toHaveBeenCalledTimes(1);
+    });
+
+    it("clearSnapshots() releases retained pagination snapshots", async () => {
+      fw.portals = { "p-a": makeFakePortal("p-a"), "p-b": makeFakePortal("p-b") };
+      await adapter.handleCommand(cmd("entities.list_portals", { scope: "viewport", limit: 1 }));
+      expect(adapter.snapshotCount).toBe(1);
+
+      adapter.clearSnapshots();
+      expect(adapter.snapshotCount).toBe(0);
+    });
+  });
 });

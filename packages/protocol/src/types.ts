@@ -31,6 +31,12 @@ import type {
   SetViewOutputSchema,
   FitBoundsInputSchema,
   FitBoundsOutputSchema,
+  SearchRegionInputSchema,
+  SearchRegionOutputSchema,
+  SelfInfoSchema,
+  PlayerSummarySchema,
+  TrailItemSchema,
+  PlayerTrailSchema,
   ListPortalsInputSchema,
   ListPortalsOutputSchema,
   ListLinksInputSchema,
@@ -96,6 +102,12 @@ export type SetViewInput = z.infer<typeof SetViewInputSchema>;
 export type SetViewOutput = z.infer<typeof SetViewOutputSchema>;
 export type FitBoundsInput = z.infer<typeof FitBoundsInputSchema>;
 export type FitBoundsOutput = z.infer<typeof FitBoundsOutputSchema>;
+export type SearchRegionInput = z.infer<typeof SearchRegionInputSchema>;
+export type SearchRegionOutput = z.infer<typeof SearchRegionOutputSchema>;
+export type SelfInfo = z.infer<typeof SelfInfoSchema>;
+export type PlayerSummary = z.infer<typeof PlayerSummarySchema>;
+export type TrailItem = z.infer<typeof TrailItemSchema>;
+export type PlayerTrail = z.infer<typeof PlayerTrailSchema>;
 export type ListPortalsInput = z.infer<typeof ListPortalsInputSchema>;
 export type ListPortalsOutput = z.infer<typeof ListPortalsOutputSchema>;
 export type ListLinksInput = z.infer<typeof ListLinksInputSchema>;

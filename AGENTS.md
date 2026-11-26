@@ -1,51 +1,32 @@
 # AGENTS.md
 
-项目: iitc-mcp — IITC ↔ MCP 桥接（Browser userscript ↔ HTTP bridge ↔ MCP stdio server）。
-编码规则同时被 CLAUDE.md 和 GEMINI.md 引用。
+Project: `iitc-mcp` — IITC ↔ MCP bridge (Browser userscript ↔ loopback HTTP pull-RPC broker ↔ MCP stdio server).
 
-## 新建工具流程
+## Adding a New Tool
 
-1. `packages/protocol/src/constants.ts` → `BRIDGE_METHODS` 数组加一项
-2. `packages/iitc-plugin/src/page-adapter.ts` → dispatch switch 加 case + 实现 handler
-3. `packages/protocol/src/schemas.ts` → Zod schema，`index.ts` → export
-4. `packages/mcp-server/src/mcp/server.ts` → `M` 常量 + `registerTool`
+1. `packages/protocol/src/constants.ts` — add the method to `BRIDGE_METHODS` (and `DESTRUCTIVE_BRIDGE_METHODS` / `MAP_MUTATING_METHODS` if applicable).
+2. `packages/protocol/src/schemas.ts`, `types.ts`, `index.ts` — define Zod schemas, infer types, and re-export from `index.ts`.
+3. `packages/iitc-plugin/src/page-adapter.ts` — add a `dispatch` case and handler (delegate viewport entity scans to `viewport-entities.ts` and pagination to `SnapshotPaginator`).
+4. `packages/mcp-server/src/mcp/server.ts` — add a declarative `BridgeToolSpec` entry in `TOOL_SPECS` with accurate `ToolAnnotations`.
 
-## 决策表
+## Design Rules
 
-| 场景 | ✅ 做法 | ❌ 避免 |
-| ------ | -------- | -------- |
-| 跨 context 事件 | `document.dispatchEvent` | 不用 `window`（Tampermonkey sandbox 隔离不可靠） |
-| 页面初始化 | `window.iitcLoaded` hook | 不轮询 `window.map` |
-| 只读查询 | page adapter 直返 JSON DTO | 不走 `GM_xmlhttpRequest` |
-| 副作用操作 | MCP tool 带 `annotations: { destructiveHint: true }` | 不可省略 annotation |
-| Promise 构造 | `Promise.withResolvers()` | 不用 `new Promise((resolve,reject)=>{...})` |
-| 构建产物 | `dist/server/cli.mjs` 需提交到仓库 | 不能依赖本地 build |
-| 共振器能量 | 归一化为 0-100 百分比 | 不可透传原始 XM 值 |
-| 连接期间事件 | `connectOnce()` 保留 `pendingEvents` | 不可清空会导致 bridge.ready 丢失 |
-| 返回数据 | 纯 JSON DTO | 不可返回 DOM/Lefalet 对象/函数 |
+| Scenario | Do | Avoid |
+| --- | --- | --- |
+| Cross-context events | `document.dispatchEvent` | `window` events (unreliable across Tampermonkey sandbox) |
+| Page initialization | `window.iitcLoaded` hook | Polling `window.map` |
+| Idle browser overhead | Gate IITC/Leaflet hooks on `status.connected === true`; answer heartbeat pings on demand | Leaving IITC hooks or background `setInterval` active while disconnected |
+| Viewport entity queries | Reuse `viewport-entities.ts` (hoist `map.getBounds()` once, `normalizeTeam` before filter) | Calling `getBounds()` per entity or comparing raw team strings |
+| Pagination snapshots | Use `SnapshotPaginator` (skip storage for single-page results, self-clearing TTL sweep) | Retaining snapshots forever or storing single-page queries |
+| Destructive tools | Set `destructive: true` + `DESTRUCTIVE_ANNOTATIONS` and block in broker `--read-only` | Registering mutating game actions without `destructiveHint: true` |
+| Deferred promises | `Promise.withResolvers()` | Manual `new Promise((resolve, reject) => ...)` |
+| Build artifact | Keep `dist/server/cli.mjs` rebuilt and committed (`git add -f dist/server/cli.mjs`) | Shipping stale CLI bundle for `npx` users |
+| Resonator energy | Normalize raw XM to 0–100% | Returning raw XM integers |
+| Connecting-phase events | Preserve `bridge.ready` while connecting; drop noisy non-ready events while disconnected | Clearing `bridge.ready` or unboundedly queueing events |
+| Return values | Plain JSON DTOs only | Returning DOM nodes, Leaflet objects, or functions |
 
-## 验证命令
+## Verification
 
 ```bash
-npm run typecheck && npx vitest run packages/iitc-plugin/test && npm run build
-```
-
-全量: `npm test`
-启动: `npx github:comicchang/iitc-mcp serve`
-
-## 代码片段
-
-```typescript
-// page-adapter.ts — 加 dispatch case
-case "map.search_region": return this.searchRegion(w, command.params as { term: string });
-
-// server.ts — 注册 MCP tool
-this.mcpServer.registerTool("iitc_xxx", {
-  description: "...",
-  inputSchema: XxxInputSchema,
-  outputSchema: XxxOutputSchema,
-}, async (args, extra) => {
-  const result = await call(M.xxx, args, { signal: extra.signal, timeoutMs: 30_000 });
-  return toolSuccess(result);
-});
+npm run typecheck && npm run lint && npm run build && npm test && npm run test:smoke
 ```

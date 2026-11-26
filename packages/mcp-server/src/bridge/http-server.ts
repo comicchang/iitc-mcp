@@ -6,10 +6,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import type { BridgeBroker } from "./broker.js";
-import type { BridgeMethod } from "@iitc-mcp/protocol";
-
-const MAX_BODY_BYTES = 1_048_576;
-const DEFAULT_PORT = 27342;
+import { BridgeMethodSchema, DEFAULT_PORT, MAX_BODY_BYTES } from "@iitc-mcp/protocol";
 
 export interface BridgeServerOptions {
   port?: number;
@@ -163,13 +160,44 @@ export function startServer(
     if (reqPath === "/mcp/call" && method === "POST") {
       const body = await parseBody(req, res);
       if (body === null) return;
-      const { method: bridgeMethod, params, timeoutMs } = body as { method: string; params: unknown; timeoutMs?: number };
+      if (typeof body !== "object" || Array.isArray(body)) {
+        errorJson(res, 400, "INVALID_ARGUMENT", "Request body must be a JSON object");
+        return;
+      }
+      const { method: rawMethod, params, timeoutMs } = body as {
+        method?: unknown;
+        params?: unknown;
+        timeoutMs?: unknown;
+      };
+      const parsedMethod = BridgeMethodSchema.safeParse(rawMethod);
+      if (!parsedMethod.success) {
+        errorJson(res, 400, "INVALID_ARGUMENT", `Invalid bridge method: ${String(rawMethod)}`);
+        return;
+      }
+      const validTimeoutMs =
+        typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0
+          ? timeoutMs
+          : undefined;
+      const ac = new AbortController();
+      const onClose = (): void => {
+        if (!res.writableEnded) ac.abort();
+      };
+      res.on("close", onClose);
       try {
-        const result = await broker.call(bridgeMethod as BridgeMethod, params, { timeoutMs });
-        json(res, 200, { ok: true, result });
+        const result = await broker.call(parsedMethod.data, params, {
+          signal: ac.signal,
+          timeoutMs: validTimeoutMs,
+        });
+        if (!res.writableEnded && !res.destroyed) {
+          json(res, 200, { ok: true, result });
+        }
       } catch (err: unknown) {
-        const error = err as { code?: string; message?: string; retryable?: boolean };
-        json(res, 200, { ok: false, error });
+        if (!res.writableEnded && !res.destroyed) {
+          const error = err as { code?: string; message?: string; retryable?: boolean };
+          json(res, 200, { ok: false, error });
+        }
+      } finally {
+        res.off("close", onClose);
       }
       return;
     }
@@ -237,6 +265,7 @@ export function startServer(
       close: () => {
         const { promise: closeP, resolve: closeR, reject: closeJ } = Promise.withResolvers<void>();
         server.close((err) => (err ? closeJ(err) : closeR()));
+        server.closeIdleConnections?.();
         return closeP;
       },
     });

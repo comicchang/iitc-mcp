@@ -1,14 +1,14 @@
 /**
  * MCP Server — SDK v1.29.0 McpServer + StdioServerTransport
- * Registers 12 tools and 3 resources, bridging MCP JSON-RPC to the IITC bridge protocol.
+ * Registers 18 tools (16 read-only) and 3 resources, bridging MCP JSON-RPC to the IITC bridge protocol.
  */
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { BridgeClient } from "../bridge/broker.js";
-import { z } from "zod/v4";
-import type { BridgeMethod } from "@iitc-mcp/protocol";
+import { z } from "zod";
+import type { BridgeError, BridgeMethod, MapState } from "@iitc-mcp/protocol";
 import {
   MapStateSchema,
   SetViewInputSchema,
@@ -42,7 +42,6 @@ import {
   RedeemSubmitOutputSchema,
   BridgeErrorSchema,
 } from "@iitc-mcp/protocol";
-import type { BridgeError, MapState } from "@iitc-mcp/protocol";
 
 /** Resource URIs */
 const RESOURCE_URIS = {
@@ -52,34 +51,184 @@ const RESOURCE_URIS = {
 } as const;
 
 const JSON_MIME = "application/json";
+const TOOL_CALL_TIMEOUT_MS = 30_000;
 
-/** Typed bridge method constants — avoids repeated `as BridgeMethod` casts. */
-const M = {
-  getState: "map.get_state",
-  getSelf: "self.get_info",
-  listPlayers: "tracker.list_players",
-  getTrail: "tracker.get_trail",
-  setView: "map.set_view",
-  fitBounds: "map.fit_bounds",
-  searchRegion: "map.search_region",
-  listPortals: "entities.list_portals",
-  listLinks: "entities.list_links",
-  listFields: "entities.list_fields",
-  regionSummary: "entities.region_summary",
-  exportGeoJson: "entities.export_geojson",
-  getDetails: "portal.get_details",
-  select: "portal.select",
-  search: "search.query",
-  commList: "comm.list",
-  commSend: "comm.send",
-  redeem: "redeem.submit",
-} as Record<string, BridgeMethod>;
+const READ_ONLY_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: true,
+};
 
+const UI_MUTATING_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: false,
+};
 
+const DESTRUCTIVE_ANNOTATIONS: ToolAnnotations = {
+  readOnlyHint: false,
+  destructiveHint: true,
+  idempotentHint: false,
+};
+
+interface BridgeToolSpec {
+  readonly name: string;
+  readonly method: BridgeMethod;
+  readonly description: string;
+  readonly inputSchema?: z.ZodType;
+  readonly outputSchema: z.ZodType;
+  readonly annotations: ToolAnnotations;
+  /** When true, omitted in `--read-only` mode. */
+  readonly destructive?: boolean;
+}
+
+const TOOL_SPECS: readonly BridgeToolSpec[] = [
+  {
+    name: "iitc_get_map_state",
+    method: "map.get_state",
+    description: "Get the current map state: center, zoom, bounds, selected portal, and data status.",
+    outputSchema: MapStateSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_list_portals",
+    method: "entities.list_portals",
+    description: "List portals currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+    inputSchema: ListPortalsInputSchema,
+    outputSchema: ListPortalsOutputSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_list_links",
+    method: "entities.list_links",
+    description: "List links currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+    inputSchema: ListLinksInputSchema,
+    outputSchema: ListLinksOutputSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_list_fields",
+    method: "entities.list_fields",
+    description: "List fields (control fields) currently visible in the IITC viewport. Returns paged results from the IITC cache.",
+    inputSchema: ListFieldsInputSchema,
+    outputSchema: ListFieldsOutputSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_get_region_summary",
+    method: "entities.region_summary",
+    description: "Summarize entities visible in the current IITC viewport: total portals, counts by faction (E/R/N/M) and level (0-8), links count, fields count, and bounds.",
+    inputSchema: RegionSummaryInputSchema,
+    outputSchema: RegionSummaryOutputSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_export_geojson",
+    method: "entities.export_geojson",
+    description: "Export entities visible in the current IITC viewport as a standard RFC 7946 GeoJSON FeatureCollection (portals as Points, optionally links as LineStrings and fields as Polygons).",
+    inputSchema: ExportGeoJsonInputSchema,
+    outputSchema: ExportGeoJsonOutputSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_get_portal_details",
+    method: "portal.get_details",
+    description: "Get detailed information about a specific portal by its GUID, including mods, resonators, owner, and history.",
+    inputSchema: GetPortalDetailsInputSchema,
+    outputSchema: GetPortalDetailsOutputSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_search",
+    method: "search.query",
+    description: "Search for portals and locations using the IITC search provider. Waits for results with a quiet-window heuristic.",
+    inputSchema: SearchQueryInputSchema,
+    outputSchema: SearchQueryOutputSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_list_comm",
+    method: "comm.list",
+    description: "List COMM (communication) messages from a channel. Optionally refreshes from Intel before reading.",
+    inputSchema: CommListInputSchema,
+    outputSchema: CommListOutputSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_set_map_view",
+    method: "map.set_view",
+    description: "Set the map view to a specific lat/lng and optional zoom level. Returns the resulting map state after the move completes.",
+    inputSchema: SetViewInputSchema,
+    outputSchema: MapStateSchema,
+    annotations: UI_MUTATING_ANNOTATIONS,
+  },
+  {
+    name: "iitc_fit_map_bounds",
+    method: "map.fit_bounds",
+    description: "Fit the map view to the given bounding box. Returns the resulting map state after the move completes.",
+    inputSchema: FitBoundsInputSchema,
+    outputSchema: MapStateSchema,
+    annotations: UI_MUTATING_ANNOTATIONS,
+  },
+  {
+    name: "iitc_search_region",
+    method: "map.search_region",
+    description: "Search for a named region (e.g. 'Hyde Park, London') via Nominatim geocoding, fit the map to its bounds, and wait for map data to finish loading. Returns the resulting map state. Follow with iitc_list_portals or iitc_get_region_summary to inspect portals in the region.",
+    inputSchema: SearchRegionInputSchema,
+    outputSchema: SearchRegionOutputSchema,
+    annotations: UI_MUTATING_ANNOTATIONS,
+  },
+  {
+    name: "iitc_select_portal",
+    method: "portal.select",
+    description: "Select a portal on the map by its GUID. Shows the portal in the sidebar and waits for the selection event.",
+    inputSchema: SelectPortalInputSchema,
+    outputSchema: SelectPortalOutputSchema,
+    annotations: UI_MUTATING_ANNOTATIONS,
+  },
+  {
+    name: "iitc_send_comm",
+    method: "comm.send",
+    description: "Send a message to an Ingress COMM channel (all or faction). This sends a real message visible to other players.",
+    inputSchema: CommSendInputSchema,
+    outputSchema: CommSendOutputSchema,
+    annotations: DESTRUCTIVE_ANNOTATIONS,
+    destructive: true,
+  },
+  {
+    name: "iitc_redeem_code",
+    method: "redeem.submit",
+    description: "Submit an Ingress passcode for redemption. This is a one-time operation that awards items, AP, or XM.",
+    inputSchema: RedeemSubmitInputSchema,
+    outputSchema: RedeemSubmitOutputSchema,
+    annotations: DESTRUCTIVE_ANNOTATIONS,
+    destructive: true,
+  },
+  {
+    name: "iitc_get_self",
+    method: "self.get_info",
+    description: "Return the signed-in player's own information: nickname, team, level, AP, and current XM.",
+    inputSchema: z.object({}),
+    outputSchema: SelfInfoSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_list_players",
+    method: "tracker.list_players",
+    description: "List players tracked by the Player Tracker plugin with their last known position, team, and action.",
+    inputSchema: z.object({}),
+    outputSchema: z.array(PlayerSummarySchema),
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+  {
+    name: "iitc_get_player_trail",
+    method: "tracker.get_trail",
+    description: "Return the trail (time-ordered events with lat/lng/action) for a specific tracked player by name.",
+    inputSchema: z.object({ name: z.string().min(1) }),
+    outputSchema: PlayerTrailSchema,
+    annotations: READ_ONLY_ANNOTATIONS,
+  },
+];
 
 /** Build a CallToolResult for success. */
 function toolSuccess(result: unknown) {
-  // Bridge results are JSON DTOs (objects); primitives get wrapped for structuredContent
+  // Bridge results are JSON DTOs (objects); primitives/arrays get wrapped for structuredContent
   const structured: Record<string, unknown> =
     result !== null && typeof result === "object" && !Array.isArray(result)
       ? (result as Record<string, unknown>)
@@ -105,7 +254,6 @@ function normalizeBridgeError(err: unknown): BridgeError {
   if (err && typeof err === "object") {
     const parsed = BridgeErrorSchema.safeParse(err);
     if (parsed.success) return parsed.data;
-    // Check for partially-matching BridgeError-like objects
     const e = err as Record<string, unknown>;
     if (
       typeof e.code === "string" &&
@@ -114,8 +262,8 @@ function normalizeBridgeError(err: unknown): BridgeError {
     ) {
       return {
         code: e.code as BridgeError["code"],
-        message: e.message as string,
-        retryable: e.retryable as boolean,
+        message: e.message,
+        retryable: e.retryable,
         details: e.details,
       };
     }
@@ -153,384 +301,48 @@ export class MCPServerBridge {
   // ── Tool Registration ───────────────────────────────────────
 
   private registerTools(): void {
-    const call = this.bridgeClient.call.bind(this.bridgeClient);
-    const TIMEOUT = 30_000;
+    for (const spec of TOOL_SPECS) {
+      if (this.readOnly && spec.destructive) continue;
+      this.registerBridgeTool(spec);
+    }
+  }
 
-    const reg = (readOnly: boolean, fn: () => void) => {
-      if (!this.readOnly || readOnly) fn();
-    };
-
-    // iitc_get_map_state
-    reg(true, () =>
+  private registerBridgeTool(spec: BridgeToolSpec): void {
+    if (spec.inputSchema) {
       this.mcpServer.registerTool(
-        "iitc_get_map_state",
+        spec.name,
         {
-          description: "Get the current map state: center, zoom, bounds, selected portal, and data status.",
-          outputSchema: MapStateSchema,
+          description: spec.description,
+          inputSchema: spec.inputSchema,
+          outputSchema: spec.outputSchema,
+          annotations: spec.annotations,
         },
-        async (extra) => {
-          try {
-            const result = await call(M.getState, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
+        async (args, extra) => this.invokeBridge(spec.method, args, extra.signal),
+      );
+      return;
+    }
 
-    // iitc_list_portals
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_list_portals",
-        {
-          description: "List portals currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-          inputSchema: ListPortalsInputSchema,
-          outputSchema: ListPortalsOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.listPortals, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
+    this.mcpServer.registerTool(
+      spec.name,
+      {
+        description: spec.description,
+        outputSchema: spec.outputSchema,
+        annotations: spec.annotations,
+      },
+      async (extra) => this.invokeBridge(spec.method, {}, extra.signal),
     );
+  }
 
-    // iitc_list_links
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_list_links",
-        {
-          description: "List links currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-          inputSchema: ListLinksInputSchema,
-          outputSchema: ListLinksOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.listLinks, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_list_fields
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_list_fields",
-        {
-          description: "List fields (control fields) currently visible in the IITC viewport. Returns paged results from the IITC cache.",
-          inputSchema: ListFieldsInputSchema,
-          outputSchema: ListFieldsOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.listFields, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_get_region_summary
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_get_region_summary",
-        {
-          description: "Summarize entities visible in the current IITC viewport: total portals, counts by faction (E/R/N/M) and level (0-8), links count, fields count, and bounds.",
-          inputSchema: RegionSummaryInputSchema,
-          outputSchema: RegionSummaryOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.regionSummary, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_export_geojson
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_export_geojson",
-        {
-          description: "Export entities visible in the current IITC viewport as a standard RFC 7946 GeoJSON FeatureCollection (portals as Points, optionally links as LineStrings and fields as Polygons).",
-          inputSchema: ExportGeoJsonInputSchema,
-          outputSchema: ExportGeoJsonOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.exportGeoJson, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_get_portal_details
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_get_portal_details",
-        {
-          description: "Get detailed information about a specific portal by its GUID, including mods, resonators, owner, and history.",
-          inputSchema: GetPortalDetailsInputSchema,
-          outputSchema: GetPortalDetailsOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.getDetails, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_search
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_search",
-        {
-          description: "Search for portals and locations using the IITC search provider. Waits for results with a quiet-window heuristic.",
-          inputSchema: SearchQueryInputSchema,
-          outputSchema: SearchQueryOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.search, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_list_comm
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_list_comm",
-        {
-          description: "List COMM (communication) messages from a channel. Optionally refreshes from Intel before reading.",
-          inputSchema: CommListInputSchema,
-          outputSchema: CommListOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.commList, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_set_map_view
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_set_map_view",
-        {
-          description: "Set the map view to a specific lat/lng and optional zoom level. Returns the resulting map state after the move completes.",
-          inputSchema: SetViewInputSchema,
-          outputSchema: MapStateSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.setView, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_fit_map_bounds
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_fit_map_bounds",
-        {
-          description: "Fit the map view to the given bounding box. Returns the resulting map state after the move completes.",
-          inputSchema: FitBoundsInputSchema,
-          outputSchema: MapStateSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.fitBounds, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_search_region
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_search_region",
-        {
-          description: "Search for a named region (e.g. '青果巷社区') via Nominatim geocoding, fit the map to its bounds, and wait for map data to finish loading. Returns the resulting map state. Follow with iitc_list_portals to count portals in the region.",
-          inputSchema: SearchRegionInputSchema,
-          outputSchema: SearchRegionOutputSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.searchRegion, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_select_portal
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_select_portal",
-        {
-          description: "Select a portal on the map by its GUID. Shows the portal in the sidebar and waits for the selection event.",
-          inputSchema: SelectPortalInputSchema,
-          outputSchema: SelectPortalOutputSchema,
-          annotations: {
-            readOnlyHint: false,
-          } satisfies ToolAnnotations,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.select, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_send_comm — destructive, blocked in read-only mode
-    reg(false, () =>
-      this.mcpServer.registerTool(
-        "iitc_send_comm",
-        {
-          description: "Send a message to an Ingress COMM channel (all or faction). This sends a real message visible to other players.",
-          inputSchema: CommSendInputSchema,
-          outputSchema: CommSendOutputSchema,
-          annotations: {
-            readOnlyHint: false,
-            destructiveHint: true,
-            idempotentHint: false,
-          } satisfies ToolAnnotations,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.commSend, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_redeem_code — destructive, blocked in read-only mode
-    reg(false, () =>
-      this.mcpServer.registerTool(
-        "iitc_redeem_code",
-        {
-          description: "Submit an Ingress passcode for redemption. This is a one-time operation that awards items, AP, or XM.",
-          inputSchema: RedeemSubmitInputSchema,
-          outputSchema: RedeemSubmitOutputSchema,
-          annotations: {
-            readOnlyHint: false,
-            destructiveHint: true,
-            idempotentHint: false,
-          } satisfies ToolAnnotations,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.redeem, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_get_self
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_get_self",
-        {
-          description: "Return the signed-in player's own information: nickname, team, level, AP, and current XM.",
-          inputSchema: z.object({}),
-          outputSchema: SelfInfoSchema,
-        },
-        async (_args, extra) => {
-          try {
-            const result = await call(M.getSelf, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_list_players
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_list_players",
-        {
-          description: "List players tracked by the Player Tracker plugin with their last known position, team, and action.",
-          inputSchema: z.object({}),
-          outputSchema: z.array(PlayerSummarySchema),
-        },
-        async (_args, extra) => {
-          try {
-            const result = await call(M.listPlayers, {}, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
-
-    // iitc_get_player_trail
-    reg(true, () =>
-      this.mcpServer.registerTool(
-        "iitc_get_player_trail",
-        {
-          description: "Return the trail (time-ordered events with lat/lng/action) for a specific tracked player by name.",
-          inputSchema: z.object({ name: z.string().min(1) }),
-          outputSchema: PlayerTrailSchema,
-        },
-        async (args, extra) => {
-          try {
-            const result = await call(M.getTrail, args, { signal: extra.signal, timeoutMs: TIMEOUT });
-            return toolSuccess(result);
-          } catch (err: unknown) {
-            return toolError(normalizeBridgeError(err));
-          }
-        },
-      ),
-    );
+  private async invokeBridge(method: BridgeMethod, params: unknown, signal?: AbortSignal) {
+    try {
+      const result = await this.bridgeClient.call(method, params, {
+        signal,
+        timeoutMs: TOOL_CALL_TIMEOUT_MS,
+      });
+      return toolSuccess(result);
+    } catch (err: unknown) {
+      return toolError(normalizeBridgeError(err));
+    }
   }
 
   // ── Resource Registration ───────────────────────────────────
@@ -547,7 +359,7 @@ export class MCPServerBridge {
         let mapState: MapState | null = null;
         if (status.connected) {
           try {
-            const raw = await this.bridgeClient.call(M.getState, {});
+            const raw = await this.bridgeClient.call("map.get_state", {});
             mapState = MapStateSchema.parse(raw);
           } catch {
             // map not ready yet
@@ -584,14 +396,14 @@ export class MCPServerBridge {
           };
         }
         try {
-          const raw = await this.bridgeClient.call(M.getState, {});
+          const raw = await this.bridgeClient.call("map.get_state", {});
           const state = MapStateSchema.parse(raw);
           if (!state.selectedPortalGuid) {
             return {
               contents: [{ uri: RESOURCE_URIS.selection, mimeType: JSON_MIME, text: "null" }],
             };
           }
-          const details = await this.bridgeClient.call(M.getDetails, { guid: state.selectedPortalGuid });
+          const details = await this.bridgeClient.call("portal.get_details", { guid: state.selectedPortalGuid });
           return {
             contents: [{ uri: RESOURCE_URIS.selection, mimeType: JSON_MIME, text: JSON.stringify(details) }],
           };

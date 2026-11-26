@@ -286,6 +286,22 @@ describe("MCPServerBridge", () => {
 
       await cleanup(bridge, client, clientTransport, serverTransport);
     });
+
+    it("sets readOnlyHint and destructiveHint annotations accurately", async () => {
+      const { bridge, client, clientTransport, serverTransport } = await setupServerAndClient();
+
+      const result = await client.listTools();
+      const byName = new Map(result.tools.map((t) => [t.name, t]));
+
+      expect(byName.get("iitc_get_map_state")?.annotations?.readOnlyHint).toBe(true);
+      expect(byName.get("iitc_list_portals")?.annotations?.readOnlyHint).toBe(true);
+      expect(byName.get("iitc_set_map_view")?.annotations?.readOnlyHint).toBe(false);
+      expect(byName.get("iitc_select_portal")?.annotations?.readOnlyHint).toBe(false);
+      expect(byName.get("iitc_send_comm")?.annotations?.destructiveHint).toBe(true);
+      expect(byName.get("iitc_redeem_code")?.annotations?.destructiveHint).toBe(true);
+
+      await cleanup(bridge, client, clientTransport, serverTransport);
+    });
   });
 
   describe("tool calls via bridge", () => {

@@ -8,10 +8,7 @@ import type {
   BridgeCompletion,
   BridgeError,
   MapState,
-  PortalSummary,
   PortalDetails,
-  LinkSummary,
-  FieldSummary,
   SearchResult,
   CommMessage,
   RedeemResult,
@@ -20,74 +17,25 @@ import type {
   ExportGeoJsonInput,
   ExportGeoJsonOutput,
   GeoJsonFeature,
+  SelfInfo,
+  PlayerSummary,
+  PlayerTrail,
+  SearchRegionOutput,
 } from "@iitc-mcp/protocol";
+import {
+  extractBounds,
+  normalizeTeam,
+  queryViewportFields,
+  queryViewportLinks,
+  queryViewportPortals,
+  type IITCField,
+  type IITCLink,
+  type IITCPortal,
+  type LeafletMap,
+} from "./viewport-entities.js";
+import { SnapshotPaginator } from "./snapshot-paginator.js";
 
 // ─── IITC 全局类型声明 ─────────────────────────────────
-
-interface IITCPortal {
-  options: {
-    guid: string;
-    data: {
-      team: string;
-      latE6: number;
-      lngE6: number;
-      level?: number;
-      health?: number;
-      resCount?: number;
-      title?: string;
-      image?: string;
-      owner?: string;
-      mods?: ({ owner: string; name: string; rarity: string; stats: Record<string, string> } | null)[];
-      resonators?: ({ owner: string; level: number; energy: number } | null)[];
-    };
-  };
-  getLatLng(): { lat: number; lng: number };
-}
-
-interface IITCLink {
-  options: {
-    guid: string;
-    data: {
-      team: string;
-      oGuid: string;
-      oLatE6: number;
-      oLngE6: number;
-      dGuid: string;
-      dLatE6: number;
-      dLngE6: number;
-    };
-  };
-}
-
-interface IITCField {
-  options: {
-    guid: string;
-    data: {
-      team: string;
-      points: Array<{ guid: string; latE6: number; lngE6: number }>;
-    };
-  };
-  getBounds(): { intersects(bounds: unknown): boolean };
-}
-
-interface LeafletMap {
-  getCenter(): { lat: number; lng: number };
-  getZoom(): number;
-  getMinZoom(): number;
-  getMaxZoom(): number;
-  getBounds(): {
-    getSouth(): number;
-    getWest(): number;
-    getNorth(): number;
-    getEast(): number;
-    contains(latlng: { lat: number; lng: number }): boolean;
-    intersects(other: unknown): boolean;
-  };
-  setView(center: [number, number], zoom?: number): void;
-  fitBounds(bounds: [[number, number], [number, number]]): void;
-  on(event: string, handler: () => void): void;
-  off(event: string, handler: () => void): void;
-}
 
 interface PortalDetailStore {
   get(guid: string): Record<string, unknown> | undefined;
@@ -106,6 +54,17 @@ interface IITCComm {
     data: Record<string, unknown[]>;
   }>;
   requestChannel(channel: string, isPublic: boolean): void;
+}
+
+interface PlayerTrackerEntry {
+  team?: string;
+  events?: Array<{
+    latlngs?: [number, number][];
+    time?: number;
+    actions?: string[];
+    name?: string;
+    address?: string;
+  }>;
 }
 
 interface WindowWithIITC extends Window {
@@ -128,26 +87,41 @@ interface WindowWithIITC extends Window {
     comm: IITCComm;
     search: IITCSearch;
   };
+  mapDataRequest?: { activeRequestCount?: number; status?: string };
+  plugin?: {
+    playerTracker?: {
+      stored?: Record<string, PlayerTrackerEntry>;
+    };
+  };
   renderPortalDetails?(guid: string): void;
 }
 
-// ─── 分页快照管理 ─────────────────────────────────────
-
-interface Snapshot {
-  id: string;
-  items: unknown[];
-  createdAt: number;
-  filter: { scope: string; team?: string };
-}
-
-const MAX_SNAPSHOTS = 32;
-const SNAPSHOT_TTL_MS = 30_000;
+/** Max XM capacity by resonator level (L1–L8). */
+const MAX_XM: Record<number, number> = {
+  1: 1000,
+  2: 1500,
+  3: 2000,
+  4: 2500,
+  5: 3000,
+  6: 4000,
+  7: 5000,
+  8: 6000,
+};
 
 // ─── Page Adapter ──────────────────────────────────────
 
 export class PageAdapter {
-  private snapshots = new Map<string, Snapshot>();
-  private snapshotCounter = 0;
+  private readonly paginator = new SnapshotPaginator();
+
+  /** Release any cached pagination snapshots and expiry timers. */
+  clearSnapshots(): void {
+    this.paginator.clear();
+  }
+
+  /** Number of pagination snapshots currently retained in memory. */
+  get snapshotCount(): number {
+    return this.paginator.size;
+  }
 
   /** 处理一条 BridgeCommand，返回 BridgeCompletion */
   async handleCommand(command: BridgeCommand): Promise<BridgeCompletion> {
@@ -190,16 +164,10 @@ export class PageAdapter {
     const map = w.map;
     const center = map.getCenter();
     const zoom = map.getZoom();
-    const bounds = map.getBounds();
     return {
       center: { lat: center.lat, lng: center.lng },
       zoom,
-      bounds: {
-        south: bounds.getSouth(),
-        west: bounds.getWest(),
-        north: bounds.getNorth(),
-        east: bounds.getEast(),
-      },
+      bounds: extractBounds(map.getBounds()),
       selectedPortalGuid: w.selectedPortal ?? null,
       dataStatus: { short: "ok" },
     };
@@ -247,14 +215,14 @@ export class PageAdapter {
 
   // ─── map.search_region ────────────────────────────────
 
-  private async searchRegion(w: WindowWithIITC, input: { term: string }): Promise<MapState & { regionName?: string }> {
+  private async searchRegion(w: WindowWithIITC, input: { term: string }): Promise<SearchRegionOutput> {
     const term = input.term.trim();
     if (!term || term.length > 256) throw makeError("INVALID_ARGUMENT", "Search term must be 1-256 characters");
 
     const url = `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(term)}&format=json&limit=1`;
     let data: Array<{ display_name?: string; boundingbox?: string[] }> = [];
     try {
-      const response = await fetch(url, { headers: { "User-Agent": "iitc-mcp/1.0" } });
+      const response = await fetch(url, { headers: { "User-Agent": "iitc-mcp/1.2" } });
       data = await response.json() as Array<{ display_name?: string; boundingbox?: string[] }>;
     } catch {
       throw makeError("UPSTREAM_ERROR", "Nominatim geocoding unreachable");
@@ -281,27 +249,19 @@ export class PageAdapter {
       throw err;
     });
 
-    // 等待 IITC 数据加载完成
-    const waitResult = await this.waitForMapData();
+    const waitResult = await this.waitForMapData(w);
     return { ...waitResult, regionName };
   }
 
   /** 轮询等待地图数据加载完成，返回当前 MapState */
-  private waitForMapData(): Promise<MapState> {
-    const w = window as unknown as WindowWithIITC & {
-      mapDataRequest?: { activeRequestCount?: number; status?: string };
-    };
+  private waitForMapData(w: WindowWithIITC): Promise<MapState> {
     const { promise, resolve } = Promise.withResolvers<MapState>();
     const started = Date.now();
     const MAX_WAIT = 15_000;
     const POLL_MS = 200;
     const check = (): void => {
       const active = w.mapDataRequest?.activeRequestCount ?? 0;
-      if (active === 0) {
-        resolve(this.getMapState(w));
-        return;
-      }
-      if (Date.now() - started >= MAX_WAIT) {
+      if (active === 0 || Date.now() - started >= MAX_WAIT) {
         resolve(this.getMapState(w));
         return;
       }
@@ -313,7 +273,7 @@ export class PageAdapter {
 
   // ─── self.get_info ────────────────────────────────────
 
-  private getSelfInfo(w: WindowWithIITC): Record<string, unknown> {
+  private getSelfInfo(w: WindowWithIITC): SelfInfo {
     const p = w.PLAYER;
     if (!p) throw makeError("NOT_FOUND", "Player info not available");
     return {
@@ -328,17 +288,11 @@ export class PageAdapter {
 
   // ─── tracker.list_players ──────────────────────────────
 
-  private listPlayers(_w: WindowWithIITC): Array<Record<string, unknown>> {
-    const stored = (window as unknown as {
-      plugin?: { playerTracker?: { stored?: Record<string, {
-        team?: string;
-        events?: Array<{ latlngs?: [number, number][]; time?: number; actions?: string[]; name?: string }>;
-      }> } };
-    }).plugin?.playerTracker?.stored;
-
+  private listPlayers(w: WindowWithIITC): PlayerSummary[] {
+    const stored = w.plugin?.playerTracker?.stored;
     if (!stored) throw makeError("NOT_FOUND", "Player Tracker plugin not active");
 
-    const items: Array<Record<string, unknown>> = [];
+    const items: PlayerSummary[] = [];
     for (const [name, data] of Object.entries(stored)) {
       const events = data.events ?? [];
       const last = events[events.length - 1];
@@ -358,21 +312,15 @@ export class PageAdapter {
 
   // ─── tracker.get_trail ──────────────────────────────────
 
-  private getPlayerTrail(_w: WindowWithIITC, input: { name: string }): Record<string, unknown> {
-    const stored = (window as unknown as {
-      plugin?: { playerTracker?: { stored?: Record<string, {
-        team?: string;
-        events?: Array<{ latlngs?: [number, number][]; time?: number; name?: string; address?: string; actions?: string[] }>;
-      }> } };
-    }).plugin?.playerTracker?.stored;
-
+  private getPlayerTrail(w: WindowWithIITC, input: { name: string }): PlayerTrail {
+    const stored = w.plugin?.playerTracker?.stored;
     if (!stored) throw makeError("NOT_FOUND", "Player Tracker plugin not active");
 
     const data = stored[input.name];
     if (!data) throw makeError("NOT_FOUND", `Player "${input.name}" not tracked`);
 
     const events = data.events ?? [];
-    const items: Array<Record<string, unknown>> = [];
+    const items: PlayerTrail["items"] = [];
     for (const ev of events) {
       const latlngs = ev.latlngs;
       if (!latlngs?.length) continue;
@@ -392,135 +340,47 @@ export class PageAdapter {
     };
   }
 
-  // ─── entities.list_portals ─────────────────────────────
+  // ─── entities.list_portals / list_links / list_fields ──
 
   private listPortals(w: WindowWithIITC, input: ListInput): unknown {
-    const portals = Object.values(w.portals);
-    const items: PortalSummary[] = [];
-    for (const p of portals) {
-      const ll = p.getLatLng();
-      if (input.team && p.options.data.team !== input.team) continue;
-      if (!this.inBounds(w, ll.lat, ll.lng)) continue;
-      items.push({
-        guid: p.options.guid,
-        team: normalizeTeam(p.options.data.team),
-        lat: ll.lat,
-        lng: ll.lng,
-        detailLevel: p.options.data.title ? "summary" : "core",
-        level: p.options.data.level,
-        health: p.options.data.health,
-        resCount: p.options.data.resCount,
-        title: p.options.data.title,
-        image: p.options.data.image,
-      });
-    }
-    items.sort((a, b) => a.guid.localeCompare(b.guid));
-    return this.paginate(items, input);
+    const items = input.cursor ? [] : queryViewportPortals(w, input.team);
+    return this.paginator.paginate(items, input);
   }
-
-  // ─── entities.list_links ───────────────────────────────
 
   private listLinks(w: WindowWithIITC, input: ListInput): unknown {
-    const links = Object.values(w.links);
-    const items: LinkSummary[] = [];
-    for (const l of links) {
-      if (input.team && l.options.data.team !== input.team) continue;
-      // Viewport filtering: check if either endpoint is in bounds
-      const oLat = l.options.data.oLatE6 / 1e6;
-      const oLng = l.options.data.oLngE6 / 1e6;
-      const dLat = l.options.data.dLatE6 / 1e6;
-      const dLng = l.options.data.dLngE6 / 1e6;
-      if (!this.inBounds(w, oLat, oLng) && !this.inBounds(w, dLat, dLng)) continue;
-      items.push({
-        guid: l.options.guid,
-        team: normalizeTeam(l.options.data.team),
-        origin: { guid: l.options.data.oGuid, lat: oLat, lng: oLng },
-        destination: { guid: l.options.data.dGuid, lat: dLat, lng: dLng },
-      });
-    }
-    items.sort((a, b) => a.guid.localeCompare(b.guid));
-    return this.paginate(items, input);
+    const items = input.cursor ? [] : queryViewportLinks(w, input.team);
+    return this.paginator.paginate(items, input);
   }
 
-  // ─── entities.list_fields ──────────────────────────────
-
   private listFields(w: WindowWithIITC, input: ListInput): unknown {
-    const fields = Object.values(w.fields);
-    const mapBounds = w.map.getBounds();
-    const items: FieldSummary[] = [];
-    for (const f of fields) {
-      if (input.team && f.options.data.team !== input.team) continue;
-      // Viewport filtering: use field's getBounds().intersects()
-      try {
-        if (!f.getBounds().intersects(mapBounds)) continue;
-      } catch {
-        // If getBounds fails, include the field
-      }
-      items.push({
-        guid: f.options.guid,
-        team: normalizeTeam(f.options.data.team),
-        points: f.options.data.points.map((pt) => ({
-          guid: pt.guid,
-          lat: pt.latE6 / 1e6,
-          lng: pt.lngE6 / 1e6,
-        })) as FieldSummary["points"],
-      });
-    }
-    items.sort((a, b) => a.guid.localeCompare(b.guid));
-    return this.paginate(items, input);
+    const items = input.cursor ? [] : queryViewportFields(w, input.team);
+    return this.paginator.paginate(items, input);
   }
 
   // ─── entities.region_summary ───────────────────────────
 
   private getRegionSummary(w: WindowWithIITC): RegionSummaryOutput {
     const mapBounds = w.map.getBounds();
+    const portals = queryViewportPortals(w, undefined, mapBounds);
+    const links = queryViewportLinks(w, undefined, mapBounds);
+    const fields = queryViewportFields(w, undefined, mapBounds);
+
     const byTeam = { E: 0, R: 0, N: 0, M: 0 };
     const byLevel: Record<string, number> = {};
-    let totalPortals = 0;
 
-    for (const p of Object.values(w.portals)) {
-      const ll = p.getLatLng();
-      if (!this.inBounds(w, ll.lat, ll.lng)) continue;
-      totalPortals++;
-      const team = normalizeTeam(p.options.data.team);
-      byTeam[team]++;
-      const levelKey = String(typeof p.options.data.level === "number" ? p.options.data.level : 0);
+    for (const portal of portals) {
+      byTeam[portal.team]++;
+      const levelKey = String(typeof portal.level === "number" ? portal.level : 0);
       byLevel[levelKey] = (byLevel[levelKey] ?? 0) + 1;
     }
 
-    let linksCount = 0;
-    for (const l of Object.values(w.links)) {
-      const oLat = l.options.data.oLatE6 / 1e6;
-      const oLng = l.options.data.oLngE6 / 1e6;
-      const dLat = l.options.data.dLatE6 / 1e6;
-      const dLng = l.options.data.dLngE6 / 1e6;
-      if (this.inBounds(w, oLat, oLng) || this.inBounds(w, dLat, dLng)) {
-        linksCount++;
-      }
-    }
-
-    let fieldsCount = 0;
-    for (const f of Object.values(w.fields)) {
-      try {
-        if (!f.getBounds().intersects(mapBounds)) continue;
-      } catch {
-        // Include field if getBounds fails
-      }
-      fieldsCount++;
-    }
-
     return {
-      bounds: {
-        south: mapBounds.getSouth(),
-        west: mapBounds.getWest(),
-        north: mapBounds.getNorth(),
-        east: mapBounds.getEast(),
-      },
-      totalPortals,
+      bounds: extractBounds(mapBounds),
+      totalPortals: portals.length,
       byTeam,
       byLevel,
-      linksCount,
-      fieldsCount,
+      linksCount: links.length,
+      fieldsCount: fields.length,
       complete: false,
       reason: "IITC_VIEWPORT_CACHE",
     };
@@ -534,110 +394,79 @@ export class PageAdapter {
     const includeLinks = input.includeLinks === true;
     const includeFields = input.includeFields === true;
 
-    const portalFeatures: GeoJsonFeature[] = [];
-    for (const p of Object.values(w.portals)) {
-      const ll = p.getLatLng();
-      const team = normalizeTeam(p.options.data.team);
-      if (teamFilter && team !== teamFilter) continue;
-      if (!this.inBounds(w, ll.lat, ll.lng)) continue;
+    const portals = queryViewportPortals(w, teamFilter, mapBounds);
+    const portalFeatures: GeoJsonFeature[] = portals.map((portal) => {
       const props: Record<string, unknown> = {
         entityType: "portal",
-        guid: p.options.guid,
-        team,
-        detailLevel: p.options.data.title ? "summary" : "core",
+        guid: portal.guid,
+        team: portal.team,
+        detailLevel: portal.detailLevel,
       };
-      if (p.options.data.level !== undefined) props.level = p.options.data.level;
-      if (p.options.data.health !== undefined) props.health = p.options.data.health;
-      if (p.options.data.resCount !== undefined) props.resCount = p.options.data.resCount;
-      if (p.options.data.title !== undefined) props.title = p.options.data.title;
-      if (p.options.data.image !== undefined) props.image = p.options.data.image;
-
-      portalFeatures.push({
+      if (portal.level !== undefined) props.level = portal.level;
+      if (portal.health !== undefined) props.health = portal.health;
+      if (portal.resCount !== undefined) props.resCount = portal.resCount;
+      if (portal.title !== undefined) props.title = portal.title;
+      if (portal.image !== undefined) props.image = portal.image;
+      return {
         type: "Feature",
-        id: p.options.guid,
+        id: portal.guid,
         geometry: {
           type: "Point",
-          coordinates: [ll.lng, ll.lat],
+          coordinates: [portal.lng, portal.lat],
         },
         properties: props,
-      });
-    }
-    portalFeatures.sort((a, b) => a.id.localeCompare(b.id));
+      };
+    });
 
-    const linkFeatures: GeoJsonFeature[] = [];
-    if (includeLinks) {
-      for (const l of Object.values(w.links)) {
-        const team = normalizeTeam(l.options.data.team);
-        if (teamFilter && team !== teamFilter) continue;
-        const oLat = l.options.data.oLatE6 / 1e6;
-        const oLng = l.options.data.oLngE6 / 1e6;
-        const dLat = l.options.data.dLatE6 / 1e6;
-        const dLng = l.options.data.dLngE6 / 1e6;
-        if (!this.inBounds(w, oLat, oLng) && !this.inBounds(w, dLat, dLng)) continue;
-        linkFeatures.push({
+    const linkFeatures: GeoJsonFeature[] = includeLinks
+      ? queryViewportLinks(w, teamFilter, mapBounds).map((link) => ({
           type: "Feature",
-          id: l.options.guid,
+          id: link.guid,
           geometry: {
             type: "LineString",
             coordinates: [
-              [oLng, oLat],
-              [dLng, dLat],
+              [link.origin.lng, link.origin.lat],
+              [link.destination.lng, link.destination.lat],
             ],
           },
           properties: {
             entityType: "link",
-            guid: l.options.guid,
-            team,
-            originGuid: l.options.data.oGuid,
-            destinationGuid: l.options.data.dGuid,
+            guid: link.guid,
+            team: link.team,
+            originGuid: link.origin.guid,
+            destinationGuid: link.destination.guid,
           },
-        });
-      }
-      linkFeatures.sort((a, b) => a.id.localeCompare(b.id));
-    }
+        }))
+      : [];
 
     const fieldFeatures: GeoJsonFeature[] = [];
     if (includeFields) {
-      for (const f of Object.values(w.fields)) {
-        const team = normalizeTeam(f.options.data.team);
-        if (teamFilter && team !== teamFilter) continue;
-        try {
-          if (!f.getBounds().intersects(mapBounds)) continue;
-        } catch {
-          // Include field if getBounds fails
-        }
-        const pts = f.options.data.points;
-        if (!pts || pts.length < 3) continue;
-        const ring: Array<[number, number]> = pts.map((pt) => [pt.lngE6 / 1e6, pt.latE6 / 1e6]);
+      for (const field of queryViewportFields(w, teamFilter, mapBounds)) {
+        if (!field.points || field.points.length < 3) continue;
+        const ring: Array<[number, number]> = field.points.map((pt) => [pt.lng, pt.lat]);
         ring.push(ring[0]);
         fieldFeatures.push({
           type: "Feature",
-          id: f.options.guid,
+          id: field.guid,
           geometry: {
             type: "Polygon",
             coordinates: [ring],
           },
           properties: {
             entityType: "field",
-            guid: f.options.guid,
-            team,
-            vertexGuids: pts.map((pt) => pt.guid),
+            guid: field.guid,
+            team: field.team,
+            vertexGuids: field.points.map((pt) => pt.guid),
           },
         });
       }
-      fieldFeatures.sort((a, b) => a.id.localeCompare(b.id));
     }
 
     return {
       type: "FeatureCollection",
       features: [...portalFeatures, ...linkFeatures, ...fieldFeatures],
       metadata: {
-        bounds: {
-          south: mapBounds.getSouth(),
-          west: mapBounds.getWest(),
-          north: mapBounds.getNorth(),
-          east: mapBounds.getEast(),
-        },
+        bounds: extractBounds(mapBounds),
         portalCount: portalFeatures.length,
         linkCount: linkFeatures.length,
         fieldCount: fieldFeatures.length,
@@ -647,6 +476,7 @@ export class PageAdapter {
     };
   }
 
+  // ─── portal.get_details ────────────────────────────────
 
   /** 将 IITC 原始 XM 能量值归一化为 0–100 百分比。 */
   private normalizeResonators(resonators: unknown): PortalDetails["resonators"] {
@@ -656,11 +486,11 @@ export class PageAdapter {
       const r = res as { owner?: unknown; level?: unknown; energy?: unknown };
       const rawEnergy = typeof r.energy === "number" ? r.energy : 0;
       const rawLevel = typeof r.level === "number" ? r.level : 1;
-      const MAX_XM: Record<number, number> = { 1: 1000, 2: 1500, 3: 2000, 4: 2500, 5: 3000, 6: 4000, 7: 5000, 8: 6000 };
       const maxXm = MAX_XM[rawLevel] ?? 1000;
       return { owner: String(r.owner ?? ""), level: rawLevel, energy: Math.round((rawEnergy / maxXm) * 100) };
     });
   }
+
   private async getPortalDetails(w: WindowWithIITC, input: { guid: string }): Promise<PortalDetails> {
     if (!(input.guid in w.portals)) {
       throw makeError("NOT_FOUND", `Portal with GUID "${input.guid}" not found in current map store`);
@@ -787,14 +617,15 @@ export class PageAdapter {
 
   // ─── comm.list ─────────────────────────────────────────
 
-  private commList(w: WindowWithIITC, input: { channel: string; limit?: number; beforeMs?: number; refresh?: boolean }): Promise<{ items: CommMessage[]; complete: boolean }> {
+  private async commList(
+    w: WindowWithIITC,
+    input: { channel: string; limit?: number; beforeMs?: number; refresh?: boolean },
+  ): Promise<{ items: CommMessage[]; complete: boolean }> {
     const comm = w.IITC?.comm;
-      if (!comm) throw makeError("UPSTREAM_ERROR", "IITC comm is not available — ensure the Intel page has fully loaded");
+    if (!comm) {
+      throw makeError("UPSTREAM_ERROR", "IITC comm is not available — ensure the Intel page has fully loaded");
+    }
 
-    return this.doCommList(w, comm, input);
-  }
-
-  private async doCommList(w: WindowWithIITC, comm: IITCComm, input: { channel: string; limit?: number; beforeMs?: number; refresh?: boolean }): Promise<{ items: CommMessage[]; complete: boolean }> {
     if (input.refresh) {
       const { promise, resolve, reject } = Promise.withResolvers<void>();
       const handler = (_data: unknown): void => {
@@ -911,53 +742,6 @@ export class PageAdapter {
 
   // ─── helpers ───────────────────────────────────────────
 
-  private inBounds(w: WindowWithIITC, lat: number, lng: number): boolean {
-    const bounds = w.map.getBounds();
-    return bounds.contains({ lat, lng });
-  }
-
-  private paginate(items: unknown[], input: ListInput): unknown {
-    const limit = input.limit ?? 500;
-    let offset = 0;
-    let snapshotId: string;
-
-    if (input.cursor) {
-      try {
-        const decoded = JSON.parse(atob(input.cursor)) as { snapshotId: string; offset: number };
-        const snap = this.snapshots.get(decoded.snapshotId);
-        if (!snap || Date.now() - snap.createdAt > SNAPSHOT_TTL_MS) {
-          throw makeError("INVALID_ARGUMENT", "Cursor expired or invalid", false, "CURSOR_INVALID_OR_EXPIRED");
-        }
-        items = snap.items;
-        offset = decoded.offset;
-        snapshotId = decoded.snapshotId;
-      } catch (err: unknown) {
-        if (isBridgeError(err)) throw err;
-        throw makeError("INVALID_ARGUMENT", "Invalid cursor format", false, "CURSOR_INVALID_OR_EXPIRED");
-      }
-    } else {
-      snapshotId = `snap-${++this.snapshotCounter}`;
-      this.snapshots.set(snapshotId, {
-        id: snapshotId,
-        items,
-        createdAt: Date.now(),
-        filter: { scope: input.scope, team: input.team },
-      });
-      if (this.snapshots.size > MAX_SNAPSHOTS) {
-        const oldest = this.snapshots.keys().next().value;
-        if (oldest) this.snapshots.delete(oldest);
-      }
-    }
-
-    const page = items.slice(offset, offset + limit);
-    const nextOffset = offset + limit;
-    const nextCursor = nextOffset < items.length
-      ? btoa(JSON.stringify({ snapshotId, offset: nextOffset }))
-      : undefined;
-
-    return { items: page, nextCursor, complete: false, reason: "IITC_VIEWPORT_CACHE" };
-  }
-
   private waitForMoveEnd(w: WindowWithIITC, action: () => void): Promise<MapState> {
     const { promise, resolve, reject } = Promise.withResolvers<MapState>();
     const map = w.map;
@@ -980,14 +764,6 @@ export class PageAdapter {
 }
 
 // ─── 工具函数 ─────────────────────────────────────────
-
-function normalizeTeam(team: string): "N" | "R" | "E" | "M" {
-  const t = team.toUpperCase();
-  if (t === "RESISTANCE" || t === "R") return "R";
-  if (t === "ENLIGHTENED" || t === "E") return "E";
-  if (t === "MACHINA" || t === "M") return "M";
-  return "N";
-}
 
 function extractText(value: unknown): string {
   if (typeof value === "string") return value;
@@ -1060,7 +836,7 @@ function parseCommMessage(guid: string, raw: Record<string, unknown>, channel: s
       type: msgToPlayer ? "PLAYER_GENERATED" : "SYSTEM",
       automated: false,
       team,
-      player: { name: String(player.name ?? "unknown"), team: normalizeTeam(String(player.team ?? "N")) },
+      player: { name: String(player.name ?? "unknown"), team },
       text,
       portals,
     };

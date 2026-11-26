@@ -39,10 +39,13 @@ export class RemoteBridgeClient implements BridgeClient {
 		const timeoutMs = opts?.timeoutMs ?? 30_000;
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
+		const onAbort = (): void => controller.abort();
 		if (opts?.signal) {
-			opts.signal.addEventListener("abort", () => controller.abort(), {
-				once: true,
-			});
+			if (opts.signal.aborted) {
+				controller.abort();
+			} else {
+				opts.signal.addEventListener("abort", onAbort, { once: true });
+			}
 		}
 		try {
 			const resp = await fetch(`${this.baseUrl}/mcp/call`, {
@@ -82,6 +85,7 @@ export class RemoteBridgeClient implements BridgeClient {
 			return body.result;
 		} finally {
 			clearTimeout(timer);
+			opts?.signal?.removeEventListener("abort", onAbort);
 		}
 	}
 

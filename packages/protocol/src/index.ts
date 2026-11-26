@@ -4,6 +4,15 @@
  */
 export {
   protocolVersion,
+  DEFAULT_PORT,
+  LEASE_MS,
+  HEARTBEAT_MS,
+  MAX_BODY_BYTES,
+  POLL_TIMEOUT_MS,
+  DEFAULT_PAGE_LIMIT,
+  MAX_PAGE_LIMIT,
+  MAX_SNAPSHOTS,
+  SNAPSHOT_TTL_MS,
   DESTRUCTIVE_BRIDGE_METHODS,
   MAP_MUTATING_METHODS,
 } from "./constants.js";
@@ -107,6 +116,12 @@ export type {
   SetViewOutput,
   FitBoundsInput,
   FitBoundsOutput,
+  SearchRegionInput,
+  SearchRegionOutput,
+  SelfInfo,
+  PlayerSummary,
+  TrailItem,
+  PlayerTrail,
   ListPortalsInput,
   ListPortalsOutput,
   ListLinksInput,

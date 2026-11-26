@@ -586,4 +586,91 @@ describe("BridgeTransport", () => {
 
     expect(connectUrl).toBe("http://127.0.0.1:27342/bridge/v1/connect");
   });
+
+  // ─── Bounded pendingEvents & disconnect drop ─────────
+
+  it("drops non-ready page events while disconnected to avoid unbounded queueing", async () => {
+    let eventBody: { events?: Array<{ eventId: string; type: string }> } | undefined;
+    const mockDoc = activeMockDocument!;
+    const gm = once([
+      (details) => {
+        // Dispatch noisy non-ready events AND a bridge.ready event before connect finishes
+        for (let i = 0; i < 10; i++) {
+          mockDoc.dispatchEvent(
+            new CustomEvent(`iitc-mcp:${CHANNEL}:event`, {
+              detail: {
+                eventId: `noise-${i}`,
+                sequence: i,
+                occurredAt: new Date().toISOString(),
+                type: "entities.changed",
+                payload: {},
+              },
+            }),
+          );
+        }
+        mockDoc.dispatchEvent(
+          new CustomEvent(`iitc-mcp:${CHANNEL}:event`, {
+            detail: {
+              eventId: "ready-evt",
+              sequence: 10,
+              occurredAt: new Date().toISOString(),
+              type: "bridge.ready",
+              payload: {},
+            },
+          }),
+        );
+        details.onload(makeGMResponse({ responseText: JSON.stringify(CONNECT_RESP) }));
+      },
+      respondJson("/bridge/v1/poll", { commands: [] }),
+      (details) => {
+        eventBody = details.data ? JSON.parse(details.data) : undefined;
+        details.onload(makeGMResponse());
+      },
+    ]);
+    const transport = makeTransport(gm);
+    transport.start();
+    await flush(6);
+    transport.stop();
+
+    expect(eventBody?.events).toHaveLength(1);
+    expect(eventBody?.events?.[0].eventId).toBe("ready-evt");
+  });
+
+  it("caps pendingEvents at 200 (dropping oldest) when flooded while connected", async () => {
+    let flushedEvents: Array<{ eventId: string }> = [];
+    const mockDoc = activeMockDocument!;
+    const gm = once([
+      respondJson("/bridge/v1/connect", CONNECT_RESP),
+      (details) => {
+        // Connected now: flood 250 events before poll returns
+        for (let i = 0; i < 250; i++) {
+          mockDoc.dispatchEvent(
+            new CustomEvent(`iitc-mcp:${CHANNEL}:event`, {
+              detail: {
+                eventId: `evt-${i}`,
+                sequence: i,
+                occurredAt: new Date().toISOString(),
+                type: "map.changed",
+                payload: {},
+              },
+            }),
+          );
+        }
+        details.onload(makeGMResponse({ responseText: '{"commands":[]}' }));
+      },
+      (details) => {
+        const body = details.data ? (JSON.parse(details.data) as { events: Array<{ eventId: string }> }) : { events: [] };
+        flushedEvents = body.events;
+        details.onload(makeGMResponse());
+      },
+    ]);
+    const transport = makeTransport(gm);
+    transport.start();
+    await flush(6);
+    transport.stop();
+
+    expect(flushedEvents).toHaveLength(200);
+    expect(flushedEvents[0].eventId).toBe("evt-50");
+    expect(flushedEvents[199].eventId).toBe("evt-249");
+  });
 });

@@ -2,13 +2,12 @@
 /**
  * CLI 入口 — iitc-mcp broker | serve [--broker-url URL] | token show | token rotate
  */
+import { DEFAULT_PORT } from "@iitc-mcp/protocol";
 import { BridgeBroker } from "./bridge/broker.js";
 import { RemoteBridgeClient } from "./bridge/remote-client.js";
 import { startServer } from "./bridge/http-server.js";
 import { MCPServerBridge } from "./mcp/server.js";
 import { getOrCreateToken, rotateToken, getToken } from "./token.js";
-
-const DEFAULT_PORT = 27342;
 
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
@@ -39,7 +38,7 @@ async function brokerCmd(args: string[]): Promise<void> {
   }
   const readOnly = args.includes("--read-only");
   const noAuth = args.includes("--no-auth");
-  const tokenInfo = getOrCreateToken();
+  getOrCreateToken();
   const broker = new BridgeBroker({ readOnly });
   const httpServer = await startServer(broker, {
     port,
@@ -51,7 +50,7 @@ async function brokerCmd(args: string[]): Promise<void> {
   if (noAuth) {
     console.error("Warning: /mcp/* Bearer authentication disabled (--no-auth)");
   } else {
-    console.error(`Token: ${tokenInfo.token}`);
+    console.error("Auth: Bearer token enabled (run 'iitc-mcp token show' to view)");
   }
   const shutdown = async () => {
     console.error("Shutting down broker...");
@@ -103,7 +102,7 @@ async function serve(args: string[]): Promise<void> {
     console.error(`Bridge origin: http://127.0.0.1:${httpServer.port}`);
   }
   if (!noAuth) {
-    console.error(`Token: ${tokenInfo.token}`);
+    console.error("Auth: Bearer token enabled (run 'iitc-mcp token show' to view)");
   }
   console.error(`iitc-mcp server ready${readOnly ? " (read-only mode)" : ""}`);
 
@@ -136,7 +135,7 @@ function tokenShow(): void {
 function tokenRotate(): void {
   const newToken = rotateToken();
   process.stdout.write(`Token: ${newToken}\n`);
-  console.error("Token rotated. Re-pair your IITC plugin.");
+  console.error("Token rotated. Restart connected MCP clients to pick up the new token.");
   console.error("The running server will reject the old token on next request.");
 }
 

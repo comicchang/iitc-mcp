@@ -1,0 +1,49 @@
+name: Bug Report
+description: Report a bug or unexpected behavior in iitc-mcp
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting an issue! Please fill out the details below so we can reproduce and fix it quickly.
+        **Do not include Bearer tokens, session cookies, or passcodes.**
+
+  - type: textarea
+    id: description
+    attributes:
+      label: What happened?
+      description: Describe the unexpected behavior clearly.
+      placeholder: Expected X, but observed Y...
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Exact commands, MCP tool calls, or browser steps.
+      placeholder: |
+        1. Start server with `npx github:comicchang/iitc-mcp serve`
+        2. Open https://intel.ingress.com with IITC + iitc-mcp userscript
+        3. Call tool `iitc_...`
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Environment
+      description: OS, Node.js version, browser, Tampermonkey/IITC version, MCP client.
+      placeholder: "macOS 15, Node 22.x, Chrome 131, IITC-CE 0.40, Claude Desktop"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Redacted stderr logs from `iitc-mcp` or `[iitc-mcp]` browser console output.
+      render: text
+    validations:
+      required: false
