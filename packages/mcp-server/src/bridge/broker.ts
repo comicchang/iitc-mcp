@@ -196,6 +196,7 @@ export class BridgeBroker implements BridgeClient {
       this.pollWaiter = null;
       callback([]);
     }, POLL_TIMEOUT_MS);
+    timer.unref?.();
     this.pollWaiter = { resolve: callback, timer };
     return timer;
   }
@@ -207,7 +208,6 @@ export class BridgeBroker implements BridgeClient {
       this.pollWaiter = null;
     }
   }
-
   /** 处理 events 请求 */
   handleEvents(req: unknown): { status: number; body: unknown } {
     const parsed = EventsRequestSchema.safeParse(req);
@@ -327,15 +327,31 @@ export class BridgeBroker implements BridgeClient {
     const id = String(++this.commandSeq);
     const { promise, resolve, reject } = Promise.withResolvers<unknown>();
     const deadlineMs = Date.now() + timeoutMs;
+
+    let onAbort: (() => void) | undefined;
+    const detachAbort = () => {
+      if (opts?.signal && onAbort) {
+        opts.signal.removeEventListener("abort", onAbort);
+        onAbort = undefined;
+      }
+    };
+
     const entry: PendingCall = {
       method,
       params,
       deadlineMs,
-      resolve,
-      reject,
+      resolve: (val) => {
+        detachAbort();
+        resolve(val);
+      },
+      reject: (err) => {
+        detachAbort();
+        reject(err);
+      },
       timeout: setTimeout(() => {
         const e = this.pendingCommands.get(id);
         if (!e) return;
+        detachAbort();
         this.pendingCommands.delete(id);
         e.cleanupAbort?.();
         reject(this.makeError("TIMEOUT", `Command ${method} timed out after ${timeoutMs}ms`));
@@ -344,16 +360,16 @@ export class BridgeBroker implements BridgeClient {
     };
 
     if (opts?.signal) {
-      const onAbort = (): void => {
+      onAbort = (): void => {
         const e = this.pendingCommands.get(id);
         if (e) {
           clearTimeout(e.timeout);
           this.pendingCommands.delete(id);
-          reject(this.makeError("CANCELLED", "Command cancelled by client"));
+          e.reject(this.makeError("CANCELLED", "Command cancelled by client"));
         }
       };
       opts.signal.addEventListener("abort", onAbort, { once: true });
-      entry.cleanupAbort = () => opts.signal?.removeEventListener("abort", onAbort);
+      entry.cleanupAbort = detachAbort;
     }
 
     this.pendingCommands.set(id, entry);
@@ -389,7 +405,9 @@ export class BridgeBroker implements BridgeClient {
 
   /** 获取最近事件 */
   async getRecentEvents(count = 100): Promise<BridgeEvent[]> {
-    return this.eventRing.slice(-count);
+    const n = Number.isFinite(count) ? Math.floor(count) : 100;
+    if (n <= 0) return [];
+    return this.eventRing.slice(-Math.min(n, this.maxEvents));
   }
 
   /** 标记 bridge.ready 已收到 */

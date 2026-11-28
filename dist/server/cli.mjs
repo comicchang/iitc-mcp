@@ -21923,6 +21923,7 @@ var BridgeBroker = class {
       this.pollWaiter = null;
       callback([]);
     }, POLL_TIMEOUT_MS);
+    timer.unref?.();
     this.pollWaiter = { resolve: callback, timer };
     return timer;
   }
@@ -22028,15 +22029,29 @@ var BridgeBroker = class {
     const id = String(++this.commandSeq);
     const { promise: promise2, resolve, reject } = Promise.withResolvers();
     const deadlineMs = Date.now() + timeoutMs;
+    let onAbort;
+    const detachAbort = () => {
+      if (opts?.signal && onAbort) {
+        opts.signal.removeEventListener("abort", onAbort);
+        onAbort = void 0;
+      }
+    };
     const entry = {
       method,
       params,
       deadlineMs,
-      resolve,
-      reject,
+      resolve: (val) => {
+        detachAbort();
+        resolve(val);
+      },
+      reject: (err) => {
+        detachAbort();
+        reject(err);
+      },
       timeout: setTimeout(() => {
         const e = this.pendingCommands.get(id);
         if (!e) return;
+        detachAbort();
         this.pendingCommands.delete(id);
         e.cleanupAbort?.();
         reject(this.makeError("TIMEOUT", `Command ${method} timed out after ${timeoutMs}ms`));
@@ -22044,16 +22059,16 @@ var BridgeBroker = class {
       dispatched: false
     };
     if (opts?.signal) {
-      const onAbort = () => {
+      onAbort = () => {
         const e = this.pendingCommands.get(id);
         if (e) {
           clearTimeout(e.timeout);
           this.pendingCommands.delete(id);
-          reject(this.makeError("CANCELLED", "Command cancelled by client"));
+          e.reject(this.makeError("CANCELLED", "Command cancelled by client"));
         }
       };
       opts.signal.addEventListener("abort", onAbort, { once: true });
-      entry.cleanupAbort = () => opts.signal?.removeEventListener("abort", onAbort);
+      entry.cleanupAbort = detachAbort;
     }
     this.pendingCommands.set(id, entry);
     this.tryDispatch();
@@ -22085,7 +22100,9 @@ var BridgeBroker = class {
   }
   /** 获取最近事件 */
   async getRecentEvents(count = 100) {
-    return this.eventRing.slice(-count);
+    const n = Number.isFinite(count) ? Math.floor(count) : 100;
+    if (n <= 0) return [];
+    return this.eventRing.slice(-Math.min(n, this.maxEvents));
   }
   /** 标记 bridge.ready 已收到 */
   markBridgeReady() {
@@ -22208,6 +22225,7 @@ var BridgeBroker = class {
 };
 
 // packages/mcp-server/src/bridge/remote-client.ts
+var DEFAULT_CONTROL_TIMEOUT_MS = 1e4;
 var RemoteBridgeClient = class {
   baseUrl;
   token;
@@ -22226,6 +22244,7 @@ var RemoteBridgeClient = class {
     const timeoutMs = opts?.timeoutMs ?? 3e4;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    timer.unref?.();
     const onAbort = () => controller.abort();
     if (opts?.signal) {
       if (opts.signal.aborted) {
@@ -22268,7 +22287,8 @@ var RemoteBridgeClient = class {
   }
   async getConnectionStatus() {
     const resp = await fetch(`${this.baseUrl}/mcp/status`, {
-      headers: this.buildHeaders()
+      headers: this.buildHeaders(),
+      signal: AbortSignal.timeout(DEFAULT_CONTROL_TIMEOUT_MS)
     });
     if (!resp.ok) {
       throw {
@@ -22280,8 +22300,10 @@ var RemoteBridgeClient = class {
     return resp.json();
   }
   async getRecentEvents(count = 100) {
-    const resp = await fetch(`${this.baseUrl}/mcp/events?count=${count}`, {
-      headers: this.buildHeaders()
+    const safeCount = Number.isFinite(count) ? Math.min(1e3, Math.max(1, Math.floor(count))) : 100;
+    const resp = await fetch(`${this.baseUrl}/mcp/events?count=${safeCount}`, {
+      headers: this.buildHeaders(),
+      signal: AbortSignal.timeout(DEFAULT_CONTROL_TIMEOUT_MS)
     });
     if (!resp.ok) {
       throw {
@@ -22297,11 +22319,10 @@ var RemoteBridgeClient = class {
 
 // packages/mcp-server/src/bridge/http-server.ts
 import { createServer } from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 function constantTimeTokenEquals(expected, provided) {
-  const a = Buffer.from(expected, "utf-8");
-  const b = Buffer.from(provided, "utf-8");
-  if (a.length !== b.length) return false;
+  const a = createHash("sha256").update(expected, "utf-8").digest();
+  const b = createHash("sha256").update(provided, "utf-8").digest();
   return timingSafeEqual(a, b);
 }
 function isAuthorized(req, expectedToken) {
@@ -22335,25 +22356,40 @@ function readBody(req) {
   return promise2;
 }
 function json2(res, status, body) {
+  if (res.headersSent || res.writableEnded || res.destroyed) return;
   const payload = JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
     "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff",
     "Content-Length": Buffer.byteLength(payload)
   });
   res.end(payload);
 }
 function empty204(res) {
-  res.writeHead(204, { "Cache-Control": "no-store" });
+  if (res.headersSent || res.writableEnded || res.destroyed) return;
+  res.writeHead(204, {
+    "Cache-Control": "no-store",
+    "X-Content-Type-Options": "nosniff"
+  });
   res.end();
 }
 function errorJson(res, status, code, message) {
   json2(res, status, { error: { code, message, retryable: false } });
 }
 function isLoopbackHost(host, port) {
-  const [hostname3, portStr] = host.includes(":") ? host.split(":") : [host, ""];
-  if (portStr && parseInt(portStr, 10) !== port) return false;
-  return hostname3 === "127.0.0.1" || hostname3 === "localhost";
+  const m = host.trim().match(/^(127\.0\.0\.1|localhost|\[::1\])(?::(\d+))?$/i);
+  if (!m) return false;
+  if (m[2] !== void 0 && Number(m[2]) !== port) return false;
+  return true;
+}
+function isAllowedOrigin(origin, port) {
+  if (!origin) return true;
+  if (origin === "https://intel.ingress.com" || origin === "https://intel-x.ingress.com") {
+    return true;
+  }
+  const m = origin.match(/^http:\/\/(127\.0\.0\.1|localhost|\[::1\]):(\d+)$/i);
+  return Boolean(m && Number(m[2]) === port);
 }
 async function parseBody(req, res) {
   const contentType = req.headers["content-type"] ?? "";
@@ -22379,134 +22415,151 @@ function startServer(broker, opts) {
   };
   let actualPort = requestedPort;
   const server = createServer(async (req, res) => {
-    const method = req.method ?? "GET";
-    const reqPath = req.url?.split("?")[0] ?? "";
-    const query = new URL(req.url ?? "", "http://localhost").searchParams;
-    const host = req.headers.host;
-    if (!host || !isLoopbackHost(host, actualPort)) {
-      errorJson(res, 400, "INVALID_ARGUMENT", "Host must be loopback");
-      return;
-    }
-    if (reqPath === "/healthz" && method === "GET") {
-      json2(res, 200, {
-        ok: true,
-        connected: broker.hasSession(),
-        readOnly: broker.isReadOnly()
-      });
-      return;
-    }
-    if (reqPath.startsWith("/mcp/")) {
-      const expectedToken = resolveExpectedToken();
-      if (expectedToken && !isAuthorized(req, expectedToken)) {
-        errorJson(res, 401, "UNAUTHORIZED", "Missing or invalid Bearer token");
+    try {
+      const method = req.method ?? "GET";
+      const parsedUrl = new URL(req.url ?? "/", "http://localhost");
+      const reqPath = parsedUrl.pathname;
+      const query = parsedUrl.searchParams;
+      const host = req.headers.host;
+      if (!host || !isLoopbackHost(host, actualPort)) {
+        errorJson(res, 400, "INVALID_ARGUMENT", "Host must be loopback");
         return;
       }
-    }
-    if (reqPath === "/mcp/status" && method === "GET") {
-      const status = await broker.getConnectionStatus();
-      json2(res, 200, status);
-      return;
-    }
-    if (reqPath === "/mcp/events" && method === "GET") {
-      const count = parseInt(query.get("count") ?? "100", 10);
-      const events = await broker.getRecentEvents(count);
-      json2(res, 200, { events });
-      return;
-    }
-    if (reqPath === "/mcp/call" && method === "POST") {
-      const body = await parseBody(req, res);
-      if (body === null) return;
-      if (typeof body !== "object" || Array.isArray(body)) {
-        errorJson(res, 400, "INVALID_ARGUMENT", "Request body must be a JSON object");
+      if (!isAllowedOrigin(req.headers.origin, actualPort)) {
+        errorJson(res, 403, "FORBIDDEN", "Origin not allowed");
         return;
       }
-      const { method: rawMethod, params, timeoutMs } = body;
-      const parsedMethod = BridgeMethodSchema.safeParse(rawMethod);
-      if (!parsedMethod.success) {
-        errorJson(res, 400, "INVALID_ARGUMENT", `Invalid bridge method: ${String(rawMethod)}`);
-        return;
-      }
-      const validTimeoutMs = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : void 0;
-      const ac = new AbortController();
-      const onClose = () => {
-        if (!res.writableEnded) ac.abort();
-      };
-      res.on("close", onClose);
-      try {
-        const result = await broker.call(parsedMethod.data, params, {
-          signal: ac.signal,
-          timeoutMs: validTimeoutMs
+      if (reqPath === "/healthz" && method === "GET") {
+        json2(res, 200, {
+          ok: true,
+          connected: broker.hasSession(),
+          readOnly: broker.isReadOnly()
         });
-        if (!res.writableEnded && !res.destroyed) {
-          json2(res, 200, { ok: true, result });
-        }
-      } catch (err) {
-        if (!res.writableEnded && !res.destroyed) {
-          const error51 = err;
-          json2(res, 200, { ok: false, error: error51 });
-        }
-      } finally {
-        res.off("close", onClose);
+        return;
       }
-      return;
-    }
-    if (method !== "POST") {
-      errorJson(res, 405, "UNSUPPORTED", "Method not allowed");
-      return;
-    }
-    const path = reqPath;
-    if (path === "/bridge/v1/connect") {
-      const body = await parseBody(req, res);
-      if (body === null) return;
-      const result = broker.handleConnect(body);
-      json2(res, result.status, result.body);
-      return;
-    }
-    if (path === "/bridge/v1/poll") {
-      const body = await parseBody(req, res);
-      if (body === null) return;
-      const result = broker.handlePoll(body);
-      if (result.longPoll) {
-        res.setHeader("Cache-Control", "no-store");
-        const onCommands = (commands) => {
-          if (res.writableEnded || res.destroyed) return;
-          json2(res, 200, { commands });
+      if (reqPath.startsWith("/mcp/")) {
+        const expectedToken = resolveExpectedToken();
+        if (expectedToken && !isAuthorized(req, expectedToken)) {
+          errorJson(res, 401, "UNAUTHORIZED", "Missing or invalid Bearer token");
+          return;
+        }
+      }
+      if (reqPath === "/mcp/status" && method === "GET") {
+        const status = await broker.getConnectionStatus();
+        json2(res, 200, status);
+        return;
+      }
+      if (reqPath === "/mcp/events" && method === "GET") {
+        const rawCount = Number.parseInt(query.get("count") ?? "100", 10);
+        const count = Number.isFinite(rawCount) ? Math.min(1e3, Math.max(1, rawCount)) : 100;
+        const events = await broker.getRecentEvents(count);
+        json2(res, 200, { events });
+        return;
+      }
+      if (reqPath === "/mcp/call" && method === "POST") {
+        const body = await parseBody(req, res);
+        if (body === null) return;
+        if (typeof body !== "object" || Array.isArray(body)) {
+          errorJson(res, 400, "INVALID_ARGUMENT", "Request body must be a JSON object");
+          return;
+        }
+        const { method: rawMethod, params, timeoutMs } = body;
+        const parsedMethod = BridgeMethodSchema.safeParse(rawMethod);
+        if (!parsedMethod.success) {
+          errorJson(res, 400, "INVALID_ARGUMENT", `Invalid bridge method: ${String(rawMethod)}`);
+          return;
+        }
+        const validTimeoutMs = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs > 0 ? timeoutMs : void 0;
+        const ac = new AbortController();
+        const onClose = () => {
+          if (!res.writableEnded) ac.abort();
         };
-        req.on("close", () => {
-          if (!res.writableEnded) {
-            broker.cancelLongPoll(onCommands);
+        res.on("close", onClose);
+        try {
+          const result = await broker.call(parsedMethod.data, params, {
+            signal: ac.signal,
+            timeoutMs: validTimeoutMs
+          });
+          if (!res.writableEnded && !res.destroyed) {
+            json2(res, 200, { ok: true, result });
           }
-        });
-        broker.setupLongPoll(onCommands);
+        } catch (err) {
+          if (!res.writableEnded && !res.destroyed) {
+            const error51 = err;
+            json2(res, 200, { ok: false, error: error51 });
+          }
+        } finally {
+          res.off("close", onClose);
+        }
         return;
       }
-      json2(res, result.status, result.body);
-      return;
-    }
-    if (path === "/bridge/v1/events") {
-      const body = await parseBody(req, res);
-      if (body === null) return;
-      const result = broker.handleEvents(body);
-      if (result.status === 204) {
-        empty204(res);
-      } else {
-        json2(res, result.status, result.body);
+      if (method !== "POST") {
+        errorJson(res, 405, "UNSUPPORTED", "Method not allowed");
+        return;
       }
-      return;
+      const path = reqPath;
+      if (path === "/bridge/v1/connect") {
+        const body = await parseBody(req, res);
+        if (body === null) return;
+        const result = broker.handleConnect(body);
+        json2(res, result.status, result.body);
+        return;
+      }
+      if (path === "/bridge/v1/poll") {
+        const body = await parseBody(req, res);
+        if (body === null) return;
+        const result = broker.handlePoll(body);
+        if (result.longPoll) {
+          res.setHeader("Cache-Control", "no-store");
+          const onCommands = (commands) => {
+            if (res.writableEnded || res.destroyed) return;
+            json2(res, 200, { commands });
+          };
+          res.once("close", () => {
+            if (!res.writableEnded) {
+              broker.cancelLongPoll(onCommands);
+            }
+          });
+          broker.setupLongPoll(onCommands);
+          return;
+        }
+        json2(res, result.status, result.body);
+        return;
+      }
+      if (path === "/bridge/v1/events") {
+        const body = await parseBody(req, res);
+        if (body === null) return;
+        const result = broker.handleEvents(body);
+        if (result.status === 204) {
+          empty204(res);
+        } else {
+          json2(res, result.status, result.body);
+        }
+        return;
+      }
+      errorJson(res, 404, "NOT_FOUND", `Unknown path: ${path}`);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Internal server error";
+      errorJson(res, 500, "INTERNAL", message);
     }
-    errorJson(res, 404, "NOT_FOUND", `Unknown path: ${path}`);
   });
   const { promise: promise2, resolve, reject } = Promise.withResolvers();
-  server.on("error", reject);
+  const onListenError = (err) => reject(err);
+  server.once("error", onListenError);
   server.listen(requestedPort, "127.0.0.1", () => {
+    server.off("error", onListenError);
+    server.on("error", (err) => {
+      console.error("[iitc-mcp] HTTP server error:", err.message);
+    });
     const addr = server.address();
     actualPort = typeof addr === "object" && addr ? addr.port : requestedPort;
     resolve({
       port: actualPort,
       close: () => {
+        broker.destroySession();
         const { promise: closeP, resolve: closeR, reject: closeJ } = Promise.withResolvers();
         server.close((err) => err ? closeJ(err) : closeR());
-        server.closeIdleConnections?.();
+        server.closeAllConnections?.();
         return closeP;
       }
     });
@@ -32418,9 +32471,10 @@ var MCPServerBridge = class {
 
 // packages/mcp-server/src/token.ts
 import { randomBytes as randomBytes2 } from "node:crypto";
-import { readFileSync, mkdirSync, unlinkSync, renameSync, openSync, closeSync, writeSync, fsyncSync, constants } from "node:fs";
+import { readFileSync, mkdirSync, chmodSync, statSync, unlinkSync, renameSync, openSync, closeSync, writeSync, fsyncSync, constants } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+var STALE_LOCK_MS = 3e4;
 var DEFAULT_CONFIG_DIR = join(homedir(), ".config", "iitc-mcp");
 var configDir = DEFAULT_CONFIG_DIR;
 function tokenFile() {
@@ -32434,17 +32488,38 @@ function generateToken() {
 }
 function ensureDir() {
   mkdirSync(configDir, { recursive: true, mode: 448 });
-}
-function acquireLock() {
   try {
-    const fd = openSync(lockFile(), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
-    closeSync(fd);
-  } catch (err) {
-    if (err.code === "EEXIST") {
-      throw new Error("Token lock held by another process");
+    chmodSync(configDir, 448);
+  } catch {
+  }
+}
+function tryCreateLock() {
+  try {
+    const fd = openSync(lockFile(), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 384);
+    try {
+      writeSync(fd, `${process.pid} ${Date.now()}
+`);
+    } finally {
+      closeSync(fd);
     }
+    return true;
+  } catch (err) {
+    if (err.code === "EEXIST") return false;
     throw err;
   }
+}
+function acquireLock() {
+  if (tryCreateLock()) return;
+  try {
+    const st = statSync(lockFile());
+    if (Date.now() - st.mtimeMs > STALE_LOCK_MS) {
+      unlinkSync(lockFile());
+      if (tryCreateLock()) return;
+    }
+  } catch {
+    if (tryCreateLock()) return;
+  }
+  throw new Error("Token lock held by another process");
 }
 function releaseLock() {
   try {
@@ -32555,7 +32630,10 @@ async function brokerCmd(args) {
   } else {
     console.error("Auth: Bearer token enabled (run 'iitc-mcp token show' to view)");
   }
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) process.exit(0);
+    shuttingDown = true;
     console.error("Shutting down broker...");
     broker.revokeSession();
     await httpServer.close();

@@ -52,7 +52,10 @@ async function brokerCmd(args: string[]): Promise<void> {
   } else {
     console.error("Auth: Bearer token enabled (run 'iitc-mcp token show' to view)");
   }
+  let shuttingDown = false;
   const shutdown = async () => {
+    if (shuttingDown) process.exit(0);
+    shuttingDown = true;
     console.error("Shutting down broker...");
     broker.revokeSession();
     await httpServer.close();
@@ -81,7 +84,6 @@ async function serve(args: string[]): Promise<void> {
   const tokenInfo = getOrCreateToken();
 
   let bridgeClient: InstanceType<typeof BridgeBroker> | InstanceType<typeof RemoteBridgeClient>;
-
   let httpServer: { port: number; close: () => Promise<void> } | undefined;
 
   if (brokerUrl) {

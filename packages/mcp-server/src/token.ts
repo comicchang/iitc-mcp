@@ -3,9 +3,11 @@
  * 优先级: IITC_MCP_TOKEN env → ~/.config/iitc-mcp/token → 随机生成
  */
 import { randomBytes } from "node:crypto";
-import { readFileSync, mkdirSync, unlinkSync, renameSync, openSync, closeSync, writeSync, fsyncSync, constants } from "node:fs";
+import { readFileSync, mkdirSync, chmodSync, statSync, unlinkSync, renameSync, openSync, closeSync, writeSync, fsyncSync, constants } from "node:fs";
 import { join } from "node:path";
 import { homedir } from "node:os";
+
+const STALE_LOCK_MS = 30_000;
 
 const DEFAULT_CONFIG_DIR = join(homedir(), ".config", "iitc-mcp");
 let configDir = DEFAULT_CONFIG_DIR;
@@ -29,18 +31,41 @@ function generateToken(): string {
 
 function ensureDir(): void {
   mkdirSync(configDir, { recursive: true, mode: 0o700 });
+  try {
+    chmodSync(configDir, 0o700);
+  } catch {
+    // ignore on platforms without POSIX chmod
+  }
+}
+
+function tryCreateLock(): boolean {
+  try {
+    const fd = openSync(lockFile(), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY, 0o600);
+    try {
+      writeSync(fd, `${process.pid} ${Date.now()}\n`);
+    } finally {
+      closeSync(fd);
+    }
+    return true;
+  } catch (err: unknown) {
+    if ((err as NodeJS.ErrnoException).code === "EEXIST") return false;
+    throw err;
+  }
 }
 
 function acquireLock(): void {
+  if (tryCreateLock()) return;
   try {
-    const fd = openSync(lockFile(), constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY);
-    closeSync(fd);
-  } catch (err: unknown) {
-    if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error("Token lock held by another process");
+    const st = statSync(lockFile());
+    if (Date.now() - st.mtimeMs > STALE_LOCK_MS) {
+      unlinkSync(lockFile());
+      if (tryCreateLock()) return;
     }
-    throw err;
+  } catch {
+    // lock vanished or raced; retry once
+    if (tryCreateLock()) return;
   }
+  throw new Error("Token lock held by another process");
 }
 
 function releaseLock(): void {

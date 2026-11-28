@@ -9,6 +9,8 @@ import type {
 } from "@iitc-mcp/protocol";
 import type { SessionStatus, BridgeClient } from "./broker.js";
 
+const DEFAULT_CONTROL_TIMEOUT_MS = 10_000;
+
 export interface RemoteBrokerOptions {
 	brokerUrl: string;
 	token?: string;
@@ -39,6 +41,7 @@ export class RemoteBridgeClient implements BridgeClient {
 		const timeoutMs = opts?.timeoutMs ?? 30_000;
 		const controller = new AbortController();
 		const timer = setTimeout(() => controller.abort(), timeoutMs);
+		timer.unref?.();
 		const onAbort = (): void => controller.abort();
 		if (opts?.signal) {
 			if (opts.signal.aborted) {
@@ -92,6 +95,7 @@ export class RemoteBridgeClient implements BridgeClient {
 	async getConnectionStatus(): Promise<SessionStatus> {
 		const resp = await fetch(`${this.baseUrl}/mcp/status`, {
 			headers: this.buildHeaders(),
+			signal: AbortSignal.timeout(DEFAULT_CONTROL_TIMEOUT_MS),
 		});
 		if (!resp.ok) {
 			throw {
@@ -104,8 +108,10 @@ export class RemoteBridgeClient implements BridgeClient {
 	}
 
 	async getRecentEvents(count = 100): Promise<BridgeEvent[]> {
-		const resp = await fetch(`${this.baseUrl}/mcp/events?count=${count}`, {
+		const safeCount = Number.isFinite(count) ? Math.min(1000, Math.max(1, Math.floor(count))) : 100;
+		const resp = await fetch(`${this.baseUrl}/mcp/events?count=${safeCount}`, {
 			headers: this.buildHeaders(),
+			signal: AbortSignal.timeout(DEFAULT_CONTROL_TIMEOUT_MS),
 		});
 		if (!resp.ok) {
 			throw {

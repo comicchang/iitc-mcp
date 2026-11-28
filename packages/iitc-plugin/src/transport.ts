@@ -112,6 +112,8 @@ export class BridgeTransport {
 
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private watchdogTimer: ReturnType<typeof setTimeout> | null = null;
+  private backoffTimer: ReturnType<typeof setTimeout> | null = null;
+  private backoffResolve: (() => void) | null = null;
   private missedHeartbeats = 0;
 
   /** completion cache: sessionId:commandId → true */
@@ -159,6 +161,7 @@ export class BridgeTransport {
 
   /** 启动连接循环 */
   async start(): Promise<void> {
+    if (this.running) return;
     this.running = true;
     this.registerPageListeners();
     this.startHeartbeat();
@@ -486,7 +489,14 @@ export class BridgeTransport {
     const jitter = Math.random() * MAX_JITTER_S;
     const totalMs = (delayS + jitter) * 1000;
     this.backoffIndex++;
-    await new Promise<void>((resolve) => setTimeout(resolve, totalMs));
+    await new Promise<void>((resolve) => {
+      this.backoffResolve = resolve;
+      this.backoffTimer = setTimeout(() => {
+        this.backoffTimer = null;
+        this.backoffResolve = null;
+        resolve();
+      }, totalMs);
+    });
     if (this.connected) {
       this.backoffIndex = 0;
     }
@@ -535,9 +545,22 @@ export class BridgeTransport {
     }
   }
 
+  private clearBackoffTimer(): void {
+    if (this.backoffTimer !== null) {
+      clearTimeout(this.backoffTimer);
+      this.backoffTimer = null;
+    }
+    if (this.backoffResolve !== null) {
+      const r = this.backoffResolve;
+      this.backoffResolve = null;
+      r();
+    }
+  }
+
   private cleanup(): void {
     this.clearHeartbeatTimer();
     this.clearWatchdogTimer();
+    this.clearBackoffTimer();
     this.cleanupPageListeners?.();
     this.cleanupPageListeners = null;
     this.pendingEvents = [];
